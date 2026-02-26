@@ -2,13 +2,6 @@ import { v } from "convex/values";
 import { action } from "./_generated/server.js";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
-import type { FunctionReference } from "convex/server";
-
-const valuePayloadValidator = v.object({
-  indicatorSlug: v.string(),
-  value: v.number(),
-  date: v.number(),
-});
 
 export const pullFromExternal = action({
   args: {
@@ -51,10 +44,10 @@ export const pullFromExternal = action({
 
     try {
       // Stub: no HTTP/Convex call to external app yet. When implemented,
-      // call external API here and insert into indicatorSnapshots.
+      // call external API here and insert rows/values into component tables.
       if (url) {
         // TODO: fetch from url (e.g. Convex HTTP action or runQuery via Convex client)
-        // and insert results via internal mutation into indicatorSnapshots
+        // and insert results via internal mutation
       }
       await ctx.runMutation(internal.externalSources.recordSyncRunFinish, {
         syncRunId,
@@ -76,40 +69,5 @@ export const pullFromExternal = action({
       valuesStaged,
       errorMessage,
     };
-  },
-});
-
-export const syncToLinkHub = action({
-  args: {
-    /** Function handle from LinkHub (createFunctionHandle(api.kpiSnapshot.writeIndicatorValue)). */
-    writeHandle: v.string(),
-    /** Company id in LinkHub for the write. */
-    linkHubCompanyId: v.string(),
-    batch: v.array(valuePayloadValidator),
-  },
-  returns: v.object({
-    synced: v.number(),
-    errors: v.array(v.string()),
-  }),
-  handler: async (ctx, args) => {
-    const handle = args.writeHandle as unknown as FunctionReference<"mutation">;
-    const errors: string[] = [];
-    let synced = 0;
-    for (const item of args.batch) {
-      try {
-        await ctx.runMutation(handle, {
-          companyId: args.linkHubCompanyId,
-          indicatorSlug: item.indicatorSlug,
-          value: item.value,
-          date: item.date,
-        });
-        synced++;
-      } catch (e) {
-        errors.push(
-          `${item.indicatorSlug}: ${e instanceof Error ? e.message : String(e)}`
-        );
-      }
-    }
-    return { synced, errors };
   },
 });

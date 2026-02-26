@@ -16,7 +16,7 @@ export const addExternalSource = mutation({
   args: {
     name: v.string(),
     deploymentUrl: v.optional(v.string()),
-    linkHubCompanyId: v.string(),
+    targetEntityId: v.string(),
     authType: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -32,7 +32,7 @@ export const updateExternalSource = mutation({
     id: v.string(),
     name: v.optional(v.string()),
     deploymentUrl: v.optional(v.string()),
-    linkHubCompanyId: v.optional(v.string()),
+    targetEntityId: v.optional(v.string()),
     authType: v.optional(v.string()),
   },
   handler: async (ctx, args) => {

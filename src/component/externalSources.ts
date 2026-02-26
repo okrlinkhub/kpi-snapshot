@@ -13,7 +13,7 @@ export const listExternalSources = query({
       _creationTime: v.number(),
       name: v.string(),
       deploymentUrl: v.optional(v.string()),
-      linkHubCompanyId: v.string(),
+      targetEntityId: v.string(),
       authType: v.optional(v.string()),
       createdAt: v.number(),
       updatedAt: v.optional(v.number()),
@@ -28,7 +28,7 @@ export const addExternalSource = mutation({
   args: {
     name: v.string(),
     deploymentUrl: v.optional(v.string()),
-    linkHubCompanyId: v.string(),
+    targetEntityId: v.string(),
     authType: v.optional(v.string()),
   },
   returns: v.id("externalSources"),
@@ -37,7 +37,7 @@ export const addExternalSource = mutation({
     return await ctx.db.insert("externalSources", {
       name: args.name,
       deploymentUrl: args.deploymentUrl,
-      linkHubCompanyId: args.linkHubCompanyId,
+      targetEntityId: args.targetEntityId,
       authType: args.authType,
       createdAt: now,
     });
@@ -49,7 +49,7 @@ export const updateExternalSource = mutation({
     id: v.id("externalSources"),
     name: v.optional(v.string()),
     deploymentUrl: v.optional(v.string()),
-    linkHubCompanyId: v.optional(v.string()),
+    targetEntityId: v.optional(v.string()),
     authType: v.optional(v.string()),
   },
   returns: v.null(),

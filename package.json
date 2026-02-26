@@ -1,6 +1,6 @@
 {
-  "name": "@okrlinkhub/kpi-snapshot",
-  "description": "Connettore KPI snapshot per LinkHub – componente Convex.",
+  "name": "@kpi-snapshot/component",
+  "description": "Componente Convex per KPI snapshot dinamici e configurabili.",
   "version": "0.1.0",
   "private": false,
   "type": "module",

@@ -1,4 +1,4 @@
-# Pubblicazione del pacchetto @okrlinkhub/kpi-snapshot
+# Pubblicazione del pacchetto @kpi-snapshot/component
 
 Istruzioni per il maintainer per build, verifica e publish su npm.
 
@@ -49,14 +49,14 @@ Inserisci utente, password e OTP se abilitato.
    npm install /path/to/okrlinkhub-kpi-snapshot-0.1.0.tgz
    ```
 
-   Verifica che gli import `@okrlinkhub/kpi-snapshot`, `@okrlinkhub/kpi-snapshot/convex.config.js` e `@okrlinkhub/kpi-snapshot/test` funzionino.
+   Verifica che gli import `@kpi-snapshot/component`, `@kpi-snapshot/component/convex.config.js` e `@kpi-snapshot/component/test` funzionino.
 
 5. **Example app in repo**
 
    Dalla root del repo, dopo `npm run build:codegen`, avvia l’example:
 
-   - `npm link` e poi `npm link @okrlinkhub/kpi-snapshot` (nella root) se l’example deve risolvere il pacchetto da locale, oppure
-   - assicurati che `convex dev` usi `example/convex` (es. `convex.json` con `"functions": "example/convex"`) e che l’example importi da `@okrlinkhub/kpi-snapshot/convex.config.js`. Dopo la build, il pacchetto in `node_modules` (o linkato) fornirà gli export da `dist/`.
+   - `npm link` e poi `npm link @kpi-snapshot/component` (nella root) se l’example deve risolvere il pacchetto da locale, oppure
+   - assicurati che `convex dev` usi `example/convex` (es. `convex.json` con `"functions": "example/convex"`) e che l’example importi da `@kpi-snapshot/component/convex.config.js`. Dopo la build, il pacchetto in `node_modules` (o linkato) fornirà gli export da `dist/`.
 
 ## Publish
 

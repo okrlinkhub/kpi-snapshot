@@ -9,6 +9,7 @@
  */
 
 import type * as externalSources from "../externalSources.js";
+import type * as snapshotEngine from "../snapshotEngine.js";
 import type * as sync from "../sync.js";
 
 import type {
@@ -20,6 +21,7 @@ import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
   externalSources: typeof externalSources;
+  snapshotEngine: typeof snapshotEngine;
   sync: typeof sync;
 }> = anyApi as any;
 

@@ -6,7 +6,7 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 
 ## [Unreleased]
 
-- Ristrutturazione repo come pacchetto npm `@okrlinkhub/kpi-snapshot`.
+- Ristrutturazione repo come pacchetto npm `@kpi-snapshot/component`.
 - Componente spostato in `src/component/`, example app in `example/`.
 - Build con `tsconfig.build.json`, codegen e output in `dist/`.
 - Entry point client `src/client/index.ts` (tipi `ComponentApi`, `IndicatorValuePayload`).
@@ -16,5 +16,5 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 ## [0.1.0] - 2026-02-26
 
 - Prima release come pacchetto npm.
-- Componente Convex: external sources, sync runs, `pullFromExternal`, `syncToLinkHub`.
-- Contratto writer (function handle LinkHub) e reader (dati da app utente) documentati.
+- Componente Convex: external sources, sync runs, `pullFromExternal`.
+- Valori snapshot mantenuti nelle tabelle del componente (nessun invio esterno).

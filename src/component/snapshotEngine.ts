@@ -1,0 +1,893 @@
+import { v } from "convex/values";
+import { mutation, query } from "./_generated/server.js";
+import type { Doc, Id } from "./_generated/dataModel.js";
+
+const operationValidator = v.union(
+  v.literal("sum"),
+  v.literal("count"),
+  v.literal("avg"),
+  v.literal("min"),
+  v.literal("max"),
+  v.literal("distinct_count")
+);
+
+const sourceKindValidator = v.union(
+  v.literal("component_table"),
+  v.literal("external_reader"),
+  v.literal("materialized_rows")
+);
+
+const sourceRowInputValidator = v.object({
+  occurredAt: v.number(),
+  rowData: v.any(),
+});
+
+type Operation = "sum" | "count" | "avg" | "min" | "max" | "distinct_count";
+
+type FilterRule = {
+  field: string;
+  op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+  value: unknown;
+};
+
+type CalculationResult = {
+  inputCount: number;
+  rawResult: number | null;
+  normalizedResult: number | null;
+  warningMessage?: string;
+  sampleRowIds: Array<Id<"sourceRows">>;
+};
+
+async function getProfileBySlug(
+  ctx: any,
+  slug: string
+) {
+  const profile = await ctx.db
+    .query("snapshotProfiles")
+    .withIndex("by_slug", (q: any) => q.eq("slug", slug))
+    .unique();
+  if (!profile) {
+    throw new Error(`Snapshot profile '${slug}' non trovato`);
+  }
+  return profile;
+}
+
+function getNestedValue(rowData: unknown, fieldPath?: string): unknown {
+  if (!fieldPath) return rowData;
+  if (rowData == null || typeof rowData !== "object") return undefined;
+  const chunks = fieldPath.split(".");
+  let cursor: unknown = rowData;
+  for (const chunk of chunks) {
+    if (cursor == null || typeof cursor !== "object") return undefined;
+    cursor = (cursor as Record<string, unknown>)[chunk];
+  }
+  return cursor;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+}
+
+function applyFilterRule(rowData: unknown, rule: FilterRule): boolean {
+  const left = getNestedValue(rowData, rule.field);
+  const right = rule.value;
+
+  switch (rule.op) {
+    case "eq":
+      return left === right;
+    case "neq":
+      return left !== right;
+    case "gt":
+      return typeof left === "number" && typeof right === "number" && left > right;
+    case "gte":
+      return typeof left === "number" && typeof right === "number" && left >= right;
+    case "lt":
+      return typeof left === "number" && typeof right === "number" && left < right;
+    case "lte":
+      return typeof left === "number" && typeof right === "number" && left <= right;
+    case "in":
+      return Array.isArray(right) ? right.includes(left) : false;
+    default:
+      return false;
+  }
+}
+
+function matchesFilters(rowData: unknown, filters: unknown): boolean {
+  if (!Array.isArray(filters) || filters.length === 0) return true;
+  return (filters as Array<FilterRule>).every((rule) => applyFilterRule(rowData, rule));
+}
+
+function computeOperation(
+  rows: Array<Doc<"sourceRows">>,
+  operation: Operation,
+  fieldPath?: string
+): number | null {
+  if (operation === "count") return rows.length;
+
+  const values = rows
+    .map((row) => toFiniteNumber(getNestedValue(row.rowData, fieldPath)))
+    .filter((v): v is number => v != null);
+
+  if (values.length === 0) return null;
+
+  switch (operation) {
+    case "sum":
+      return values.reduce((acc, value) => acc + value, 0);
+    case "avg":
+      return values.reduce((acc, value) => acc + value, 0) / values.length;
+    case "min":
+      return Math.min(...values);
+    case "max":
+      return Math.max(...values);
+    case "distinct_count": {
+      const distinct = new Set(values.map((v) => `${v}`));
+      return distinct.size;
+    }
+    default:
+      return null;
+  }
+}
+
+function applyNormalization(value: number | null, normalization: unknown): number | null {
+  if (value == null) {
+    if (
+      normalization &&
+      typeof normalization === "object" &&
+      "coalesce" in normalization &&
+      typeof (normalization as { coalesce?: unknown }).coalesce === "number"
+    ) {
+      return (normalization as { coalesce: number }).coalesce;
+    }
+    return null;
+  }
+
+  let result = value;
+  if (normalization && typeof normalization === "object") {
+    const objectNormalization = normalization as {
+      scale?: unknown;
+      round?: unknown;
+      clamp?: { min?: number; max?: number };
+    };
+    if (typeof objectNormalization.scale === "number") {
+      result *= objectNormalization.scale;
+    }
+    if (typeof objectNormalization.round === "number") {
+      const digits = Math.max(0, Math.trunc(objectNormalization.round));
+      result = Number(result.toFixed(digits));
+    }
+    if (objectNormalization.clamp && typeof objectNormalization.clamp === "object") {
+      const min = objectNormalization.clamp.min;
+      const max = objectNormalization.clamp.max;
+      if (typeof min === "number") {
+        result = Math.max(min, result);
+      }
+      if (typeof max === "number") {
+        result = Math.min(max, result);
+      }
+    }
+  }
+
+  return result;
+}
+
+function buildRuleHash(definition: Doc<"calculationDefinitions">): string {
+  return [
+    definition._id,
+    definition.ruleVersion,
+    definition.operation,
+    definition.fieldPath ?? "",
+    JSON.stringify(definition.filters ?? null),
+    JSON.stringify(definition.normalization ?? null),
+  ].join("|");
+}
+
+function runSingleDefinition(
+  definition: Doc<"calculationDefinitions">,
+  rows: Array<Doc<"sourceRows">>
+): CalculationResult {
+  const filteredRows = rows.filter((row) => matchesFilters(row.rowData, definition.filters));
+  const rawResult = computeOperation(
+    filteredRows,
+    definition.operation as Operation,
+    definition.fieldPath
+  );
+  const normalizedResult = applyNormalization(rawResult, definition.normalization);
+  const warningMessage =
+    definition.groupBy && definition.groupBy.length > 0
+      ? "groupBy presente ma non ancora applicato in questa versione"
+      : undefined;
+
+  return {
+    inputCount: filteredRows.length,
+    rawResult,
+    normalizedResult,
+    warningMessage,
+    sampleRowIds: filteredRows.slice(0, 10).map((row) => row._id),
+  };
+}
+
+export const createSnapshotProfile = mutation({
+  args: {
+    slug: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+  },
+  returns: v.id("snapshotProfiles"),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("snapshotProfiles")
+      .withIndex("by_slug", (q) => q.eq("slug", args.slug))
+      .unique();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        name: args.name,
+        description: args.description,
+        isActive: args.isActive ?? existing.isActive,
+        version: existing.version + 1,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+    return await ctx.db.insert("snapshotProfiles", {
+      slug: args.slug,
+      name: args.name,
+      description: args.description,
+      isActive: args.isActive ?? true,
+      version: 1,
+      createdAt: now,
+    });
+  },
+});
+
+export const listSnapshotProfiles = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      _id: v.id("snapshotProfiles"),
+      _creationTime: v.number(),
+      slug: v.string(),
+      name: v.string(),
+      description: v.optional(v.string()),
+      isActive: v.boolean(),
+      version: v.number(),
+      createdAt: v.number(),
+      updatedAt: v.optional(v.number()),
+    })
+  ),
+  handler: async (ctx) => {
+    return await ctx.db.query("snapshotProfiles").collect();
+  },
+});
+
+export const upsertDataSource = mutation({
+  args: {
+    profileSlug: v.string(),
+    sourceKey: v.string(),
+    label: v.string(),
+    sourceKind: sourceKindValidator,
+    metadata: v.optional(v.any()),
+    enabled: v.optional(v.boolean()),
+  },
+  returns: v.id("dataSources"),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const existing = await ctx.db
+      .query("dataSources")
+      .withIndex("by_profile_and_source_key", (q) =>
+        q.eq("profileId", profile._id).eq("sourceKey", args.sourceKey)
+      )
+      .unique();
+    const now = Date.now();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        label: args.label,
+        sourceKind: args.sourceKind,
+        metadata: args.metadata,
+        enabled: args.enabled ?? existing.enabled,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+    return await ctx.db.insert("dataSources", {
+      profileId: profile._id,
+      sourceKey: args.sourceKey,
+      label: args.label,
+      sourceKind: args.sourceKind,
+      metadata: args.metadata,
+      enabled: args.enabled ?? true,
+      createdAt: now,
+    });
+  },
+});
+
+export const upsertIndicator = mutation({
+  args: {
+    profileSlug: v.string(),
+    slug: v.string(),
+    label: v.string(),
+    unit: v.optional(v.string()),
+    category: v.optional(v.string()),
+    description: v.optional(v.string()),
+    enabled: v.optional(v.boolean()),
+  },
+  returns: v.id("indicators"),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const existing = await ctx.db
+      .query("indicators")
+      .withIndex("by_profile_and_slug", (q) =>
+        q.eq("profileId", profile._id).eq("slug", args.slug)
+      )
+      .unique();
+    const now = Date.now();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        label: args.label,
+        unit: args.unit,
+        category: args.category,
+        description: args.description,
+        enabled: args.enabled ?? existing.enabled,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+    return await ctx.db.insert("indicators", {
+      profileId: profile._id,
+      slug: args.slug,
+      label: args.label,
+      unit: args.unit,
+      category: args.category,
+      description: args.description,
+      enabled: args.enabled ?? true,
+      createdAt: now,
+    });
+  },
+});
+
+export const upsertCalculationDefinition = mutation({
+  args: {
+    profileSlug: v.string(),
+    indicatorSlug: v.string(),
+    sourceKey: v.string(),
+    operation: operationValidator,
+    fieldPath: v.optional(v.string()),
+    filters: v.optional(v.any()),
+    groupBy: v.optional(v.array(v.string())),
+    normalization: v.optional(v.any()),
+    priority: v.optional(v.number()),
+    enabled: v.optional(v.boolean()),
+    ruleVersion: v.optional(v.number()),
+  },
+  returns: v.id("calculationDefinitions"),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const indicator = await ctx.db
+      .query("indicators")
+      .withIndex("by_profile_and_slug", (q) =>
+        q.eq("profileId", profile._id).eq("slug", args.indicatorSlug)
+      )
+      .unique();
+    if (!indicator) {
+      throw new Error(`Indicatore '${args.indicatorSlug}' non trovato`);
+    }
+    const dataSource = await ctx.db
+      .query("dataSources")
+      .withIndex("by_profile_and_source_key", (q) =>
+        q.eq("profileId", profile._id).eq("sourceKey", args.sourceKey)
+      )
+      .unique();
+    if (!dataSource) {
+      throw new Error(`Data source '${args.sourceKey}' non trovata`);
+    }
+
+    const existingForIndicator = await ctx.db
+      .query("calculationDefinitions")
+      .withIndex("by_profile_and_indicator", (q) =>
+        q.eq("profileId", profile._id).eq("indicatorId", indicator._id)
+      )
+      .collect();
+
+    const existing = existingForIndicator.find((definition) => {
+      return (
+        definition.dataSourceId === dataSource._id &&
+        definition.operation === args.operation &&
+        definition.fieldPath === args.fieldPath
+      );
+    });
+
+    const now = Date.now();
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        filters: args.filters,
+        groupBy: args.groupBy,
+        normalization: args.normalization,
+        priority: args.priority ?? existing.priority,
+        enabled: args.enabled ?? existing.enabled,
+        ruleVersion: args.ruleVersion ?? existing.ruleVersion + 1,
+        updatedAt: now,
+      });
+      return existing._id;
+    }
+
+    return await ctx.db.insert("calculationDefinitions", {
+      profileId: profile._id,
+      indicatorId: indicator._id,
+      dataSourceId: dataSource._id,
+      operation: args.operation,
+      fieldPath: args.fieldPath,
+      filters: args.filters,
+      groupBy: args.groupBy,
+      normalization: args.normalization,
+      priority: args.priority ?? 100,
+      enabled: args.enabled ?? true,
+      ruleVersion: args.ruleVersion ?? 1,
+      createdAt: now,
+    });
+  },
+});
+
+export const toggleCalculation = mutation({
+  args: {
+    definitionId: v.id("calculationDefinitions"),
+    enabled: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.definitionId, {
+      enabled: args.enabled,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+export const replaceProfileDefinitions = mutation({
+  args: {
+    profileSlug: v.string(),
+    definitions: v.array(
+      v.object({
+        indicatorSlug: v.string(),
+        sourceKey: v.string(),
+        operation: operationValidator,
+        fieldPath: v.optional(v.string()),
+        filters: v.optional(v.any()),
+        groupBy: v.optional(v.array(v.string())),
+        normalization: v.optional(v.any()),
+        priority: v.optional(v.number()),
+        enabled: v.optional(v.boolean()),
+        ruleVersion: v.optional(v.number()),
+      })
+    ),
+  },
+  returns: v.object({
+    deleted: v.number(),
+    created: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const existing = await ctx.db
+      .query("calculationDefinitions")
+      .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+      .collect();
+    for (const definition of existing) {
+      await ctx.db.delete(definition._id);
+    }
+
+    let created = 0;
+    for (const definition of args.definitions) {
+      const indicator = await ctx.db
+        .query("indicators")
+        .withIndex("by_profile_and_slug", (q) =>
+          q.eq("profileId", profile._id).eq("slug", definition.indicatorSlug)
+        )
+        .unique();
+      if (!indicator) {
+        throw new Error(`Indicatore '${definition.indicatorSlug}' non trovato`);
+      }
+      const dataSource = await ctx.db
+        .query("dataSources")
+        .withIndex("by_profile_and_source_key", (q) =>
+          q.eq("profileId", profile._id).eq("sourceKey", definition.sourceKey)
+        )
+        .unique();
+      if (!dataSource) {
+        throw new Error(`Data source '${definition.sourceKey}' non trovata`);
+      }
+      await ctx.db.insert("calculationDefinitions", {
+        profileId: profile._id,
+        indicatorId: indicator._id,
+        dataSourceId: dataSource._id,
+        operation: definition.operation,
+        fieldPath: definition.fieldPath,
+        filters: definition.filters,
+        groupBy: definition.groupBy,
+        normalization: definition.normalization,
+        priority: definition.priority ?? 100,
+        enabled: definition.enabled ?? true,
+        ruleVersion: definition.ruleVersion ?? 1,
+        createdAt: Date.now(),
+      });
+      created++;
+    }
+    return { deleted: existing.length, created };
+  },
+});
+
+export const listProfileDefinitions = query({
+  args: {
+    profileSlug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const [indicators, dataSources, definitions] = await Promise.all([
+      ctx.db
+        .query("indicators")
+        .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+        .collect(),
+      ctx.db
+        .query("dataSources")
+        .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+        .collect(),
+      ctx.db
+        .query("calculationDefinitions")
+        .withIndex("by_profile_and_priority", (q) => q.eq("profileId", profile._id))
+        .collect(),
+    ]);
+
+    const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]));
+    const dataSourcesById = new Map(dataSources.map((source) => [source._id, source]));
+
+    return {
+      profile,
+      indicators,
+      dataSources,
+      definitions: definitions.map((definition) => ({
+        ...definition,
+        indicatorSlug: indicatorsById.get(definition.indicatorId)?.slug ?? null,
+        sourceKey: dataSourcesById.get(definition.dataSourceId)?.sourceKey ?? null,
+      })),
+    };
+  },
+});
+
+export const ingestSourceRows = mutation({
+  args: {
+    profileSlug: v.string(),
+    sourceKey: v.string(),
+    rows: v.array(sourceRowInputValidator),
+  },
+  returns: v.object({
+    inserted: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const dataSource = await ctx.db
+      .query("dataSources")
+      .withIndex("by_profile_and_source_key", (q) =>
+        q.eq("profileId", profile._id).eq("sourceKey", args.sourceKey)
+      )
+      .unique();
+    if (!dataSource) {
+      throw new Error(`Data source '${args.sourceKey}' non trovata`);
+    }
+    const now = Date.now();
+    for (const row of args.rows) {
+      await ctx.db.insert("sourceRows", {
+        profileId: profile._id,
+        dataSourceId: dataSource._id,
+        occurredAt: row.occurredAt,
+        rowData: row.rowData,
+        ingestedAt: now,
+      });
+    }
+    return { inserted: args.rows.length };
+  },
+});
+
+export const simulateSnapshot = query({
+  args: {
+    profileSlug: v.string(),
+    snapshotAt: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const snapshotAt = args.snapshotAt ?? Date.now();
+    const [definitions, indicators, dataSources] = await Promise.all([
+      ctx.db
+        .query("calculationDefinitions")
+        .withIndex("by_profile_and_priority", (q) => q.eq("profileId", profile._id))
+        .collect(),
+      ctx.db
+        .query("indicators")
+        .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+        .collect(),
+      ctx.db
+        .query("dataSources")
+        .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+        .collect(),
+    ]);
+
+    const enabledDefinitions = definitions.filter((definition) => definition.enabled);
+    const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]));
+    const dataSourcesById = new Map(dataSources.map((source) => [source._id, source]));
+
+    const rowsByDataSource = new Map<Id<"dataSources">, Array<Doc<"sourceRows">>>();
+    for (const source of dataSources) {
+      const sourceRows = await ctx.db
+        .query("sourceRows")
+        .withIndex("by_data_source_and_occurred_at", (q) =>
+          q.eq("dataSourceId", source._id).lte("occurredAt", snapshotAt)
+        )
+        .collect();
+      rowsByDataSource.set(source._id, sourceRows);
+    }
+
+    return enabledDefinitions.map((definition) => {
+      const rows = rowsByDataSource.get(definition.dataSourceId) ?? [];
+      const result = runSingleDefinition(definition, rows);
+      return {
+        definitionId: definition._id,
+        indicatorId: definition.indicatorId,
+        indicatorSlug: indicatorsById.get(definition.indicatorId)?.slug ?? null,
+        sourceKey: dataSourcesById.get(definition.dataSourceId)?.sourceKey ?? null,
+        operation: definition.operation,
+        fieldPath: definition.fieldPath,
+        inputCount: result.inputCount,
+        rawResult: result.rawResult,
+        normalizedResult: result.normalizedResult,
+        warningMessage: result.warningMessage,
+      };
+    });
+  },
+});
+
+export const createSnapshot = mutation({
+  args: {
+    profileSlug: v.string(),
+    snapshotAt: v.optional(v.number()),
+    triggeredBy: v.optional(v.string()),
+    note: v.optional(v.string()),
+  },
+  returns: v.object({
+    snapshotId: v.id("snapshots"),
+    snapshotRunId: v.id("snapshotRuns"),
+    status: v.union(v.literal("success"), v.literal("error")),
+    processedCount: v.number(),
+    errorsCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    const snapshotAt = args.snapshotAt ?? Date.now();
+    const now = Date.now();
+    const snapshotId = await ctx.db.insert("snapshots", {
+      profileId: profile._id,
+      snapshotAt,
+      status: "running",
+      note: args.note,
+      triggeredBy: args.triggeredBy,
+      createdAt: now,
+    });
+
+    const definitions = await ctx.db
+      .query("calculationDefinitions")
+      .withIndex("by_profile_and_priority", (q) => q.eq("profileId", profile._id))
+      .collect();
+    const enabledDefinitions = definitions.filter((definition) => definition.enabled);
+
+    const snapshotRunId = await ctx.db.insert("snapshotRuns", {
+      snapshotId,
+      profileId: profile._id,
+      startedAt: now,
+      status: "running",
+      triggeredBy: args.triggeredBy,
+      definitionsCount: enabledDefinitions.length,
+      processedCount: 0,
+    });
+
+    let processedCount = 0;
+    let errorsCount = 0;
+    for (const definition of enabledDefinitions) {
+      const startedAt = Date.now();
+      const dataSourceRows = await ctx.db
+        .query("sourceRows")
+        .withIndex("by_data_source_and_occurred_at", (q) =>
+          q.eq("dataSourceId", definition.dataSourceId).lte("occurredAt", snapshotAt)
+        )
+        .collect();
+
+      try {
+        const result = runSingleDefinition(definition, dataSourceRows);
+        const durationMs = Date.now() - startedAt;
+        const ruleHash = buildRuleHash(definition);
+        const itemId = await ctx.db.insert("snapshotRunItems", {
+          snapshotRunId,
+          snapshotId,
+          profileId: profile._id,
+          definitionId: definition._id,
+          indicatorId: definition.indicatorId,
+          dataSourceId: definition.dataSourceId,
+          status: result.normalizedResult == null ? "skipped" : "success",
+          inputCount: result.inputCount,
+          rawResult: result.rawResult ?? undefined,
+          normalizedResult: result.normalizedResult ?? undefined,
+          durationMs,
+          warningMessage: result.warningMessage,
+          ruleHash,
+          createdAt: Date.now(),
+        });
+        if (result.normalizedResult != null) {
+          await ctx.db.insert("snapshotValues", {
+            snapshotId,
+            snapshotRunId,
+            snapshotRunItemId: itemId,
+            profileId: profile._id,
+            indicatorId: definition.indicatorId,
+            value: result.normalizedResult,
+            computedAt: Date.now(),
+            ruleHash,
+            explainRef: `runItem:${itemId}`,
+          });
+          await ctx.db.insert("values", {
+            indicatorId: definition.indicatorId,
+            value: result.normalizedResult,
+            measuredAt: snapshotAt,
+            createdAt: Date.now(),
+          });
+        }
+        await ctx.db.insert("calculationTraces", {
+          snapshotRunId,
+          snapshotRunItemId: itemId,
+          profileId: profile._id,
+          definitionId: definition._id,
+          queryParams: {
+            snapshotAt,
+            dataSourceId: definition.dataSourceId,
+          },
+          resolvedFilters: definition.filters,
+          sampleRowIds: result.sampleRowIds,
+          warnings: result.warningMessage ? [result.warningMessage] : undefined,
+          createdAt: Date.now(),
+        });
+      } catch (error) {
+        errorsCount++;
+        const durationMs = Date.now() - startedAt;
+        const itemId = await ctx.db.insert("snapshotRunItems", {
+          snapshotRunId,
+          snapshotId,
+          profileId: profile._id,
+          definitionId: definition._id,
+          indicatorId: definition.indicatorId,
+          dataSourceId: definition.dataSourceId,
+          status: "error",
+          inputCount: dataSourceRows.length,
+          durationMs,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          ruleHash: buildRuleHash(definition),
+          createdAt: Date.now(),
+        });
+        await ctx.db.insert("calculationTraces", {
+          snapshotRunId,
+          snapshotRunItemId: itemId,
+          profileId: profile._id,
+          definitionId: definition._id,
+          queryParams: {
+            snapshotAt,
+            dataSourceId: definition.dataSourceId,
+          },
+          resolvedFilters: definition.filters,
+          sampleRowIds: dataSourceRows.slice(0, 10).map((row) => row._id),
+          warnings: ["calcolo terminato con errore"],
+          notes: error instanceof Error ? error.message : String(error),
+          createdAt: Date.now(),
+        });
+      }
+      processedCount++;
+    }
+
+    const endStatus: "success" | "error" = errorsCount > 0 ? "error" : "success";
+    await ctx.db.patch(snapshotRunId, {
+      finishedAt: Date.now(),
+      status: endStatus,
+      errorMessage: errorsCount > 0 ? `${errorsCount} regole in errore` : undefined,
+      processedCount,
+    });
+    await ctx.db.patch(snapshotId, {
+      finishedAt: Date.now(),
+      status: endStatus,
+      errorMessage: errorsCount > 0 ? `${errorsCount} regole in errore` : undefined,
+    });
+
+    return {
+      snapshotId,
+      snapshotRunId,
+      status: endStatus,
+      processedCount,
+      errorsCount,
+    };
+  },
+});
+
+export const listSnapshots = query({
+  args: {
+    profileSlug: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 20;
+    if (!args.profileSlug) {
+      return await ctx.db.query("snapshots").order("desc").take(limit);
+    }
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    return await ctx.db
+      .query("snapshots")
+      .withIndex("by_profile_and_snapshot_at", (q) => q.eq("profileId", profile._id))
+      .order("desc")
+      .take(limit);
+  },
+});
+
+export const getSnapshotExplain = query({
+  args: {
+    snapshotId: v.id("snapshots"),
+  },
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db.get(args.snapshotId);
+    if (!snapshot) return null;
+    const run = await ctx.db
+      .query("snapshotRuns")
+      .withIndex("by_snapshot", (q) => q.eq("snapshotId", args.snapshotId))
+      .unique();
+    if (!run) {
+      return {
+        snapshot,
+        run: null,
+        runItems: [],
+        traces: [],
+        values: [],
+      };
+    }
+    const [runItems, values] = await Promise.all([
+      ctx.db
+        .query("snapshotRunItems")
+        .withIndex("by_snapshot_run", (q) => q.eq("snapshotRunId", run._id))
+        .collect(),
+      ctx.db
+        .query("snapshotValues")
+        .withIndex("by_snapshot", (q) => q.eq("snapshotId", args.snapshotId))
+        .collect(),
+    ]);
+    const traces: Array<Doc<"calculationTraces">> = [];
+    for (const item of runItems) {
+      const trace = await ctx.db
+        .query("calculationTraces")
+        .withIndex("by_snapshot_run_item", (q) => q.eq("snapshotRunItemId", item._id))
+        .unique();
+      if (trace) traces.push(trace);
+    }
+    return {
+      snapshot,
+      run,
+      runItems,
+      traces,
+      values,
+    };
+  },
+});
+
+export const listSnapshotRunErrors = query({
+  args: {
+    snapshotRunId: v.id("snapshotRuns"),
+  },
+  handler: async (ctx, args) => {
+    const items = await ctx.db
+      .query("snapshotRunItems")
+      .withIndex("by_snapshot_run", (q) => q.eq("snapshotRunId", args.snapshotRunId))
+      .collect();
+    return items.filter((item) => item.status === "error");
+  },
+});

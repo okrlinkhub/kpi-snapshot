@@ -30,8 +30,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           authType?: string;
           deploymentUrl?: string;
-          linkHubCompanyId: string;
           name: string;
+          targetEntityId: string;
         },
         string,
         Name
@@ -46,8 +46,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           authType?: string;
           createdAt: number;
           deploymentUrl?: string;
-          linkHubCompanyId: string;
           name: string;
+          targetEntityId: string;
           updatedAt?: number;
         }>,
         Name
@@ -75,10 +75,190 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           authType?: string;
           deploymentUrl?: string;
           id: string;
-          linkHubCompanyId?: string;
           name?: string;
+          targetEntityId?: string;
         },
         null,
+        Name
+      >;
+    };
+    snapshotEngine: {
+      createSnapshot: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          note?: string;
+          profileSlug: string;
+          snapshotAt?: number;
+          triggeredBy?: string;
+        },
+        {
+          errorsCount: number;
+          processedCount: number;
+          snapshotId: string;
+          snapshotRunId: string;
+          status: "success" | "error";
+        },
+        Name
+      >;
+      createSnapshotProfile: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          description?: string;
+          isActive?: boolean;
+          name: string;
+          slug: string;
+        },
+        string,
+        Name
+      >;
+      getSnapshotExplain: FunctionReference<
+        "query",
+        "internal",
+        { snapshotId: string },
+        any,
+        Name
+      >;
+      ingestSourceRows: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          profileSlug: string;
+          rows: Array<{ occurredAt: number; rowData: any }>;
+          sourceKey: string;
+        },
+        { inserted: number },
+        Name
+      >;
+      listProfileDefinitions: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        any,
+        Name
+      >;
+      listSnapshotProfiles: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<{
+          _creationTime: number;
+          _id: string;
+          createdAt: number;
+          description?: string;
+          isActive: boolean;
+          name: string;
+          slug: string;
+          updatedAt?: number;
+          version: number;
+        }>,
+        Name
+      >;
+      listSnapshotRunErrors: FunctionReference<
+        "query",
+        "internal",
+        { snapshotRunId: string },
+        any,
+        Name
+      >;
+      listSnapshots: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; profileSlug?: string },
+        any,
+        Name
+      >;
+      replaceProfileDefinitions: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          definitions: Array<{
+            enabled?: boolean;
+            fieldPath?: string;
+            filters?: any;
+            groupBy?: Array<string>;
+            indicatorSlug: string;
+            normalization?: any;
+            operation:
+              | "sum"
+              | "count"
+              | "avg"
+              | "min"
+              | "max"
+              | "distinct_count";
+            priority?: number;
+            ruleVersion?: number;
+            sourceKey: string;
+          }>;
+          profileSlug: string;
+        },
+        { created: number; deleted: number },
+        Name
+      >;
+      simulateSnapshot: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string; snapshotAt?: number },
+        any,
+        Name
+      >;
+      toggleCalculation: FunctionReference<
+        "mutation",
+        "internal",
+        { definitionId: string; enabled: boolean },
+        null,
+        Name
+      >;
+      upsertCalculationDefinition: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          enabled?: boolean;
+          fieldPath?: string;
+          filters?: any;
+          groupBy?: Array<string>;
+          indicatorSlug: string;
+          normalization?: any;
+          operation: "sum" | "count" | "avg" | "min" | "max" | "distinct_count";
+          priority?: number;
+          profileSlug: string;
+          ruleVersion?: number;
+          sourceKey: string;
+        },
+        string,
+        Name
+      >;
+      upsertDataSource: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          enabled?: boolean;
+          label: string;
+          metadata?: any;
+          profileSlug: string;
+          sourceKey: string;
+          sourceKind:
+            | "component_table"
+            | "external_reader"
+            | "materialized_rows";
+        },
+        string,
+        Name
+      >;
+      upsertIndicator: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          category?: string;
+          description?: string;
+          enabled?: boolean;
+          label: string;
+          profileSlug: string;
+          slug: string;
+          unit?: string;
+        },
+        string,
         Name
       >;
     };
@@ -98,17 +278,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           syncRunId: string;
           valuesStaged: number;
         },
-        Name
-      >;
-      syncToLinkHub: FunctionReference<
-        "action",
-        "internal",
-        {
-          batch: Array<{ date: number; indicatorSlug: string; value: number }>;
-          linkHubCompanyId: string;
-          writeHandle: string;
-        },
-        { errors: Array<string>; synced: number },
         Name
       >;
     };
