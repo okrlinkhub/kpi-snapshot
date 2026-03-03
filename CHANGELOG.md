@@ -6,7 +6,7 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 
 ## [Unreleased]
 
-- Ristrutturazione repo come pacchetto npm `@kpi-snapshot/component`.
+- Ristrutturazione repo come pacchetto npm `@okrlinkhub/component`.
 - Componente spostato in `src/component/`, example app in `example/`.
 - Build con `tsconfig.build.json`, codegen e output in `dist/`.
 - Entry point client `src/client/index.ts` (tipi `ComponentApi`, `IndicatorValuePayload`).

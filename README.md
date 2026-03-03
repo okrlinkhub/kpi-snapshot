@@ -1,11 +1,11 @@
-# @kpi-snapshot/component
+# @okrlinkhub/component
 
 Componente Convex per creare **KPI snapshot dinamici e configurabili**: definizione di profili, sorgenti dati, regole di calcolo (`sum`, `count`, `avg`, `min`, `max`, `distinct_count`), esecuzione snapshot manuale e tracciamento completo dei calcoli.
 
 ## Installazione
 
 ```bash
-npm install @kpi-snapshot/component
+npm install @okrlinkhub/component
 ```
 
 ## Configurazione in `convex.config.ts`
@@ -14,7 +14,7 @@ Nella tua app Convex:
 
 ```ts
 import { defineApp } from "convex/server";
-import kpiSnapshot from "@kpi-snapshot/component/convex.config.js";
+import kpiSnapshot from "@okrlinkhub/component/convex.config.js";
 
 const app = defineApp();
 app.use(kpiSnapshot, { name: "kpiSnapshot" });
@@ -65,7 +65,7 @@ Per dataset molto grandi, puoi introdurre `@convex-dev/aggregate` su KPI “cald
 Per tipizzare l’API del componente o i payload:
 
 ```ts
-import type { ComponentApi } from "@kpi-snapshot/component";
+import type { ComponentApi } from "@okrlinkhub/component";
 ```
 
 ## Test con convex-test
@@ -74,7 +74,7 @@ Se usi [convex-test](https://docs.convex.dev/testing/convex-test), puoi registra
 
 ```ts
 import { convexTest } from "convex-test";
-import { register } from "@kpi-snapshot/component/test";
+import { register } from "@okrlinkhub/component/test";
 
 const t = convexTest(schema, modules);
 register(t, "kpiSnapshot");
@@ -87,10 +87,10 @@ Dalla root del repo:
 
 1. `npm install`
 2. `npm run build:codegen` (genera `src/component/_generated` e compila in `dist/`)
-3. Per far risolvere l’example a questo pacchetto: `npm link` e poi `npm link @kpi-snapshot/component`
+3. Per far risolvere l’example a questo pacchetto: `npm link` e poi `npm link @okrlinkhub/component`
 4. `npm run dev` (avvia convex dev sull’example e, se configurato, watch della build)
 
-L’example app usa `example/convex` (vedi `convex.json` con `"functions": "example/convex"`) e importa il componente da `@kpi-snapshot/component/convex.config.js`.
+L’example app usa `example/convex` (vedi `convex.json` con `"functions": "example/convex"`) e importa il componente da `@okrlinkhub/component/convex.config.js`.
 
 ## Documentazione Convex
 

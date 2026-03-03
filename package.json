@@ -1,5 +1,5 @@
 {
-  "name": "@kpi-snapshot/component",
+  "name": "@okrlinkhub/component",
   "description": "Componente Convex per KPI snapshot dinamici e configurabili.",
   "version": "0.1.0",
   "private": false,
