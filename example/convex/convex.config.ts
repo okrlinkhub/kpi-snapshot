@@ -1,5 +1,5 @@
 import { defineApp } from "convex/server";
-import kpiSnapshot from "@okrlinkhub/component/convex.config.js";
+import kpiSnapshot from "@okrlinkhub/kpi-snapshot/convex.config.js";
 
 const app = defineApp();
 app.use(kpiSnapshot, { name: "kpiSnapshot" });

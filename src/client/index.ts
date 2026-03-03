@@ -1,5 +1,5 @@
 /**
- * Client entry point per @okrlinkhub/component.
+ * Client entry point per @okrlinkhub/kpi-snapshot.
  * Re-export di tipi e helper per le app che usano il componente.
  */
 

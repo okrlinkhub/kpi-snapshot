@@ -1,6 +1,6 @@
 /**
  * Test helper per convex-test: registra il componente kpi-snapshot nell'istanza di test.
- * Uso: import { register } from "@okrlinkhub/component/test";
+ * Uso: import { register } from "@okrlinkhub/kpi-snapshot/test";
  *      const t = convexTest(appSchema, appModules);
  *      register(t, "kpiSnapshot");
  */
