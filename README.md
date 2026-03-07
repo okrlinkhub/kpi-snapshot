@@ -46,6 +46,8 @@ Un file (es. `convex/kpiSnapshot.ts`) che espone query e mutation verso `compone
 
 - **File di esempio**: [templates/kpiSnapshotWrapper.example.ts](templates/kpiSnapshotWrapper.example.ts)  
   Copialo in `convex/` della tua app (es. come `kpiSnapshot.ts`) e sostituisci solo il controllo accessi in `requireAuth(ctx)`.
+- **Pagina admin esempio (completa e guidata)**: [example/src/App.tsx](example/src/App.tsx)  
+  Mostra una UI a tab per setup, creazione/modifica regole, filtri guidati, simulazione e snapshot explain. Usala come base per la tua pagina admin.
 - **Funzioni da esporre** (per l’UI e per il cron): `listSnapshotProfiles`, `listProfileDefinitions`, `simulateSnapshot`, `listSnapshots`, `getSnapshotExplain`, `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `createSnapshot`, `ingestSourceRows`. Il client userà `api.kpiSnapshot.*` (es. `api.kpiSnapshot.listProfiles`, `api.kpiSnapshot.createSnapshot`).
 
 **2.2 Sync dei dati (mutation che inviano i dati al componente)**  
@@ -85,7 +87,7 @@ Ti consigliamo di creare una **pagina admin** (es. “Impostazioni KPI” o “C
 5. **Sincronizzazione**: pulsanti che chiamano le tue mutation di sync (es. “Sincronizza fatture”, “Sincronizza preavvisi”) per inviare i dati al componente.
 6. **Snapshot**: pulsante “Crea snapshot” che chiama `createSnapshot`; lista “Ultimi snapshot” con `listSnapshots` e dettaglio con `getSnapshotExplain`. Opzionale: “Simulazione” con `simulateSnapshot` prima di creare.
 
-Puoi basarti sulle API esposte dal wrapper (`api.kpiSnapshot.*`). Non forniamo un’UI pronta: la struttura sopra è la checklist da implementare nella tua app (React, Vue, ecc.). Un’app di esempio che usa il componente può essere disponibile nel repo (cartella `example/`) come riferimento.
+Puoi basarti sulle API esposte dal wrapper (`api.kpiSnapshot.*`). Nel repository trovi una UI pronta di riferimento in [example/src/App.tsx](example/src/App.tsx), pensata come base da adattare alla tua app (React, Vue, ecc.).
 
 ---
 
@@ -162,10 +164,115 @@ Tabelle principali: `snapshotProfiles`, `dataSources`, `indicators`, `calculatio
 
 ---
 
+## Migrazione compatibilità `indicatorLabelSnapshot`
+
+Per compatibilità con installazioni già in uso, il campo `snapshotValues.indicatorLabelSnapshot` è temporaneamente `optional`.
+
+### Passi consigliati
+
+1. Pubblica/aggiorna il componente con schema opzionale.
+2. Esegui la mutation di backfill su **tutti** i deployment che usano il componente:
+
+```ts
+await ctx.runMutation(
+  components.kpiSnapshot.snapshotEngine.backfillIndicatorLabelSnapshot,
+  { dryRun: false }
+);
+```
+
+Opzioni utili:
+- `dryRun: true` per vedere quanti record verrebbero aggiornati senza scrivere.
+- `profileSlug` per migrare un profilo specifico.
+
+3. Dopo che il backfill è completato ovunque, rendi `indicatorLabelSnapshot` nuovamente obbligatorio (`v.string()`) e pubblica una versione successiva.
+
+---
+
 ## API principali (riferimento)
 
 Configurazione: `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `replaceProfileDefinitions`, `listProfileDefinitions`, `listSnapshotProfiles`.  
 Esecuzione: `ingestSourceRows`, `simulateSnapshot`, `createSnapshot`, `listSnapshots`, `getSnapshotExplain`, `listSnapshotRunErrors`.
+
+---
+
+## Ricette regole pronte
+
+Di seguito trovi esempi pratici da usare come base quando chiami `upsertCalculationDefinition`.
+
+### 1) Conteggio totale righe (nessun filtro)
+
+```ts
+await upsertCalculationDefinition({
+  profileSlug: "my_profile",
+  indicatorSlug: "count_all",
+  sourceKey: "invoices",
+  operation: "count",
+  // fieldPath opzionale con count
+  enabled: true,
+});
+```
+
+### 2) Conteggio righe con campo valorizzato (`monthRef != null`)
+
+```ts
+await upsertCalculationDefinition({
+  profileSlug: "my_profile",
+  indicatorSlug: "count_with_month",
+  sourceKey: "invoices",
+  operation: "count",
+  filters: [{ field: "monthRef", op: "neq", value: null }],
+  enabled: true,
+});
+```
+
+### 3) Somma di un campo numerico (`sum(amount)`)
+
+```ts
+await upsertCalculationDefinition({
+  profileSlug: "my_profile",
+  indicatorSlug: "amount_total",
+  sourceKey: "invoices",
+  operation: "sum",
+  fieldPath: "amount",
+  normalization: { round: 2 },
+  enabled: true,
+});
+```
+
+### 4) Conteggio con filtro `in` (categorie selezionate)
+
+```ts
+await upsertCalculationDefinition({
+  profileSlug: "my_profile",
+  indicatorSlug: "count_selected_categories",
+  sourceKey: "invoices",
+  operation: "count",
+  filters: [{ field: "category", op: "in", value: ["software", "services"] }],
+  enabled: true,
+});
+```
+
+### 5) Media condizionata (`avg(amount)` con soglia)
+
+```ts
+await upsertCalculationDefinition({
+  profileSlug: "my_profile",
+  indicatorSlug: "avg_large_invoices",
+  sourceKey: "invoices",
+  operation: "avg",
+  fieldPath: "amount",
+  filters: [{ field: "amount", op: "gt", value: 1000 }],
+  normalization: { round: 2, coalesce: 0 },
+  enabled: true,
+});
+```
+
+### Note rapide
+
+- `count` funziona anche senza `fieldPath`.
+- `sum`, `avg`, `min`, `max`, `distinct_count` richiedono in genere `fieldPath`.
+- Se vuoi escludere record “vuoti”, usa spesso `op: "neq"` con `value: null`.
+- Per debug: usa `simulateSnapshot` prima, poi `createSnapshot`, e controlla `getSnapshotExplain`.
 
 ---
 

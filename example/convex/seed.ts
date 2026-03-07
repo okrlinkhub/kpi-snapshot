@@ -296,3 +296,140 @@ export const getLatestSnapshotExplain = query({
     });
   },
 });
+
+export const createOrUpdateProfile = mutation({
+  args: {
+    profileSlug: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const kpiComponent = (components as any).kpiSnapshot;
+    return await ctx.runMutation(kpiComponent.snapshotEngine.createSnapshotProfile, args);
+  },
+});
+
+export const upsertDataSource = mutation({
+  args: {
+    profileSlug: v.string(),
+    sourceKey: v.string(),
+    label: v.string(),
+    sourceKind: v.union(
+      v.literal("component_table"),
+      v.literal("external_reader"),
+      v.literal("materialized_rows")
+    ),
+    metadata: v.optional(v.any()),
+    enabled: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const kpiComponent = (components as any).kpiSnapshot;
+    return await ctx.runMutation(kpiComponent.snapshotEngine.upsertDataSource, args);
+  },
+});
+
+export const upsertIndicator = mutation({
+  args: {
+    profileSlug: v.string(),
+    slug: v.string(),
+    label: v.string(),
+    unit: v.optional(v.string()),
+    category: v.optional(v.string()),
+    description: v.optional(v.string()),
+    enabled: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const kpiComponent = (components as any).kpiSnapshot;
+    return await ctx.runMutation(kpiComponent.snapshotEngine.upsertIndicator, args);
+  },
+});
+
+export const upsertCalculationDefinition = mutation({
+  args: {
+    profileSlug: v.string(),
+    indicatorSlug: v.string(),
+    sourceKey: v.string(),
+    operation: v.union(
+      v.literal("sum"),
+      v.literal("count"),
+      v.literal("avg"),
+      v.literal("min"),
+      v.literal("max"),
+      v.literal("distinct_count")
+    ),
+    fieldPath: v.optional(v.string()),
+    filters: v.optional(v.any()),
+    groupBy: v.optional(v.array(v.string())),
+    normalization: v.optional(v.any()),
+    priority: v.optional(v.number()),
+    enabled: v.optional(v.boolean()),
+    ruleVersion: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const kpiComponent = (components as any).kpiSnapshot;
+    return await ctx.runMutation(kpiComponent.snapshotEngine.upsertCalculationDefinition, args);
+  },
+});
+
+export const replaceProfileDefinitions = mutation({
+  args: {
+    profileSlug: v.string(),
+    definitions: v.array(
+      v.object({
+        indicatorSlug: v.string(),
+        sourceKey: v.string(),
+        operation: v.union(
+          v.literal("sum"),
+          v.literal("count"),
+          v.literal("avg"),
+          v.literal("min"),
+          v.literal("max"),
+          v.literal("distinct_count")
+        ),
+        fieldPath: v.optional(v.string()),
+        filters: v.optional(v.any()),
+        groupBy: v.optional(v.array(v.string())),
+        normalization: v.optional(v.any()),
+        priority: v.optional(v.number()),
+        enabled: v.optional(v.boolean()),
+        ruleVersion: v.optional(v.number()),
+      })
+    ),
+  },
+  handler: async (ctx, args) => {
+    const kpiComponent = (components as any).kpiSnapshot;
+    return await ctx.runMutation(kpiComponent.snapshotEngine.replaceProfileDefinitions, args);
+  },
+});
+
+export const listProfileDefinitions = query({
+  args: {
+    profileSlug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const kpiComponent = (components as any).kpiSnapshot;
+    try {
+      return await ctx.runQuery(kpiComponent.snapshotEngine.listProfileDefinitions, args);
+    } catch (error) {
+      if (isProfileMissingError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  },
+});
+
+export const toggleCalculation = mutation({
+  args: {
+    definitionId: v.string(),
+    enabled: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const kpiComponent = (components as any).kpiSnapshot;
+    return await ctx.runMutation(kpiComponent.snapshotEngine.toggleCalculation, {
+      definitionId: args.definitionId as any,
+      enabled: args.enabled,
+    });
+  },
+});

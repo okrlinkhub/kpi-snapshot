@@ -110,6 +110,17 @@ export declare const components: {
       >;
     };
     snapshotEngine: {
+      backfillIndicatorLabelSnapshot: FunctionReference<
+        "mutation",
+        "internal",
+        { dryRun?: boolean; profileSlug?: string },
+        {
+          scanned: number;
+          skippedAlreadySet: number;
+          skippedMissingIndicator: number;
+          updated: number;
+        }
+      >;
       createSnapshot: FunctionReference<
         "mutation",
         "internal",

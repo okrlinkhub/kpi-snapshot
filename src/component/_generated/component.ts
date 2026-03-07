@@ -83,6 +83,18 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     snapshotEngine: {
+      backfillIndicatorLabelSnapshot: FunctionReference<
+        "mutation",
+        "internal",
+        { dryRun?: boolean; profileSlug?: string },
+        {
+          scanned: number;
+          skippedAlreadySet: number;
+          skippedMissingIndicator: number;
+          updated: number;
+        },
+        Name
+      >;
       createSnapshot: FunctionReference<
         "mutation",
         "internal",

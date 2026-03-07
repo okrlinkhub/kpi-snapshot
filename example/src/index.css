@@ -17,3 +17,30 @@ body {
     background: var(--color-dark);
   }
 }
+
+/* Improve readability/contrast for the example admin controls. */
+input,
+select,
+textarea {
+  color: #0f172a;
+  background: #ffffff;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #475569;
+}
+
+@media (prefers-color-scheme: dark) {
+  input,
+  select,
+  textarea {
+    color: #f8fafc;
+    background: #111827;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: #94a3b8;
+  }
+}

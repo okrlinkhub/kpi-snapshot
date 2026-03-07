@@ -184,6 +184,10 @@ function buildRuleHash(definition: Doc<"calculationDefinitions">): string {
   ].join("|");
 }
 
+function normalizeIndicatorLabelSnapshot(label: string): string {
+  return label.replace(/\s+/g, " ").trim();
+}
+
 function runSingleDefinition(
   definition: Doc<"calculationDefinitions">,
   rows: Array<Doc<"sourceRows">>
@@ -677,6 +681,11 @@ export const createSnapshot = mutation({
       .query("calculationDefinitions")
       .withIndex("by_profile_and_priority", (q) => q.eq("profileId", profile._id))
       .collect();
+    const indicators = await ctx.db
+      .query("indicators")
+      .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+      .collect();
+    const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]));
     const enabledDefinitions = definitions.filter((definition) => definition.enabled);
 
     const snapshotRunId = await ctx.db.insert("snapshotRuns", {
@@ -704,6 +713,11 @@ export const createSnapshot = mutation({
         const result = runSingleDefinition(definition, dataSourceRows);
         const durationMs = Date.now() - startedAt;
         const ruleHash = buildRuleHash(definition);
+        const indicator = indicatorsById.get(definition.indicatorId);
+        if (!indicator) {
+          throw new Error(`Indicatore non trovato per definitionId '${definition._id}'`);
+        }
+        const indicatorLabelSnapshot = normalizeIndicatorLabelSnapshot(indicator.label);
         const itemId = await ctx.db.insert("snapshotRunItems", {
           snapshotRunId,
           snapshotId,
@@ -727,6 +741,7 @@ export const createSnapshot = mutation({
             snapshotRunItemId: itemId,
             profileId: profile._id,
             indicatorId: definition.indicatorId,
+            indicatorLabelSnapshot,
             value: result.normalizedResult,
             computedAt: Date.now(),
             ruleHash,
@@ -889,5 +904,68 @@ export const listSnapshotRunErrors = query({
       .withIndex("by_snapshot_run", (q) => q.eq("snapshotRunId", args.snapshotRunId))
       .collect();
     return items.filter((item) => item.status === "error");
+  },
+});
+
+/**
+ * Backfill migration for legacy rows where `snapshotValues.indicatorLabelSnapshot` is missing.
+ * Run this on all deployments before making schema field required again.
+ */
+export const backfillIndicatorLabelSnapshot = mutation({
+  args: {
+    profileSlug: v.optional(v.string()),
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    updated: v.number(),
+    skippedAlreadySet: v.number(),
+    skippedMissingIndicator: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const profile = args.profileSlug ? await getProfileBySlug(ctx, args.profileSlug) : null;
+    const dryRun = args.dryRun ?? false;
+
+    const [snapshotValues, indicators] = await Promise.all([
+      ctx.db.query("snapshotValues").collect(),
+      ctx.db.query("indicators").collect(),
+    ]);
+    const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]));
+
+    let scanned = 0;
+    let updated = 0;
+    let skippedAlreadySet = 0;
+    let skippedMissingIndicator = 0;
+
+    for (const row of snapshotValues) {
+      if (profile && row.profileId !== profile._id) {
+        continue;
+      }
+      scanned++;
+
+      if (row.indicatorLabelSnapshot && row.indicatorLabelSnapshot.trim().length > 0) {
+        skippedAlreadySet++;
+        continue;
+      }
+
+      const indicator = indicatorsById.get(row.indicatorId);
+      if (!indicator) {
+        skippedMissingIndicator++;
+        continue;
+      }
+
+      const indicatorLabelSnapshot = normalizeIndicatorLabelSnapshot(indicator.label);
+      if (!dryRun) {
+        await ctx.db.patch(row._id, { indicatorLabelSnapshot });
+      }
+      updated++;
+    }
+
+    return {
+      scanned,
+      updated,
+      skippedAlreadySet,
+      skippedMissingIndicator,
+    };
   },
 });
