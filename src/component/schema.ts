@@ -169,9 +169,7 @@ export default defineSchema({
     snapshotRunItemId: v.id("snapshotRunItems"),
     profileId: v.id("snapshotProfiles"),
     indicatorId: v.id("indicators"),
-    // Temporary optional for backward compatibility across already-installed components.
-    // After running the dedicated backfill mutation on all deployments, this should be made required again.
-    indicatorLabelSnapshot: v.optional(v.string()),
+    indicatorLabelSnapshot: v.string(),
     value: v.number(),
     computedAt: v.number(),
     ruleHash: v.string(),
