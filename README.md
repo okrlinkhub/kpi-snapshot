@@ -1,177 +1,259 @@
 # @okrlinkhub/kpi-snapshot
 
-Componente Convex per **KPI snapshot dinamici e configurabili**: profili, sorgenti dati, regole di calcolo (`sum`, `count`, `avg`, `min`, `max`, `distinct_count`), snapshot manuale o pianificato e tracciamento dei calcoli.
+Componente Convex per KPI snapshot dinamici e configurabili: profili, sorgenti dati, regole di calcolo (`sum`, `count`, `avg`, `min`, `max`, `distinct_count`), snapshot manuali o pianificati e tracciamento dei calcoli.
+
+Da questa versione il package può essere usato in due modi:
+
+- come componente standalone, limitandosi a calcolare e storicizzare KPI;
+- come componente dell'universo LinkHub, collegando indicatori e valori a `@okrlinkhub/okrhub` tramite `externalId`.
 
 ## Requisiti
 
 - Node.js 18+
-- Convex (versione compatibile con i componenti)
-- App Convex con le tue tabelle (es. fatture, preavvisi) da cui derivare i KPI
+- Convex compatibile con i componenti
+- Una tua app Convex con tabelle sorgente da cui derivare i KPI
 
 ## Installazione
+
+Setup standalone:
 
 ```bash
 npm install @okrlinkhub/kpi-snapshot
 ```
 
----
+Setup integrato con OKRHub:
 
-## Percorso di configurazione (dall’installazione all’uso)
+```bash
+npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
+```
 
-Segui questi passi nell’ordine: così avrai tutto sotto mano per usare il componente nell’app padre.
+## Cosa fa il package e cosa resta all'app host
 
-### Passo 1 — Aggiungere il componente all’app
+`kpi-snapshot` si occupa di:
 
-In **`convex/convex.config.ts`** della tua app:
+- definizione dei profili e delle regole di calcolo;
+- ricezione di `sourceRows` materializzate dalla tua app;
+- generazione di `snapshot`, `snapshotValues` e storico `values`;
+- persistenza opzionale di `externalId` su `indicators` e `values`;
+- helper client-side `exposeApi(...)` per ridurre il boilerplate nell'app host.
+
+La tua app host continua a possedere:
+
+- autenticazione e autorizzazione;
+- lettura e normalizzazione dei dati di dominio;
+- scheduling dei cron;
+- metadati di business necessari a OKRHub, ad esempio `companyExternalId`, `symbol` e `periodicity`.
+
+## Setup minimo nell'app host
+
+### 1. Registra il componente
+
+In `convex/convex.config.ts`:
 
 ```ts
 import { defineApp } from "convex/server";
 import kpiSnapshot from "@okrlinkhub/kpi-snapshot/convex.config.js";
 
 const app = defineApp();
+
 app.use(kpiSnapshot, { name: "kpiSnapshot" });
+
 export default app;
 ```
 
-Esegui `npx convex dev`: il componente espone le sue funzioni sotto `components.kpiSnapshot` (es. `components.kpiSnapshot.snapshotEngine.createSnapshot`). Il client della tua app **non** userà questi path direttamente: userà le funzioni che esponi tu (passo 2).
+### 2. Crea un wrapper Convex nella tua app
 
----
+Il package esporta un helper `exposeApi(...)` che genera query e mutation pass-through già pronte. Tu devi solo applicare il tuo controllo accessi.
 
-### Passo 2 — Funzioni nell’app padre (wrapper + sync)
+Template pronto, incluso nel package:
 
-Devi esporre due tipi di funzioni nella tua app.
+- [`templates/kpiSnapshotWrapper.example.ts`](templates/kpiSnapshotWrapper.example.ts)
 
-**2.1 Wrapper (pass-through con controllo accessi)**  
-Un file (es. `convex/kpiSnapshot.ts`) che espone query e mutation verso `components.kpiSnapshot.snapshotEngine.*` e applica il tuo controllo accessi (es. solo admin). L’unico punto da adattare è la funzione di auth (es. `requireAdmin(ctx)`).
+Esempio minimo:
 
-- **File di esempio**: [templates/kpiSnapshotWrapper.example.ts](templates/kpiSnapshotWrapper.example.ts)  
-  Copialo in `convex/` della tua app (es. come `kpiSnapshot.ts`) e sostituisci solo il controllo accessi in `requireAuth(ctx)`.
-- **Pagina admin esempio (completa e guidata)**: [example/src/App.tsx](example/src/App.tsx)  
-  Mostra una UI a tab per setup, creazione/modifica regole, filtri guidati, simulazione e snapshot explain. Usala come base per la tua pagina admin.
-- **Funzioni da esporre** (per l’UI e per il cron): `listSnapshotProfiles`, `listProfileDefinitions`, `simulateSnapshot`, `listSnapshots`, `getSnapshotExplain`, `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `createSnapshot`, `ingestSourceRows`. Il client userà `api.kpiSnapshot.*` (es. `api.kpiSnapshot.listProfiles`, `api.kpiSnapshot.createSnapshot`).
+```ts
+import { components } from "./_generated/api";
+import { exposeApi } from "@okrlinkhub/kpi-snapshot";
 
-**2.2 Sync dei dati (mutation che inviano i dati al componente)**  
-I dati vivono nelle **tabelle della tua app**. L’app deve leggerli, normalizzarli e inviarli al componente con `ingestSourceRows`. Crea uno o più file (es. `convex/kpiSnapshotSync.ts`) con mutation che:
+async function requireAdmin(ctx: { db: any }) {
+  // Implementa qui il tuo controllo accessi.
+}
 
-1. Leggono una tabella (es. `invoices`, `notices`).
-2. Mappano ogni riga in `{ occurredAt: number, rowData: object }` (es. `occurredAt` = data fattura, `rowData` = campi usati dalle regole, incluso almeno il campo su cui fai sum/count, es. `value`).
-3. Chiamano `ctx.runMutation(components.kpiSnapshot.snapshotEngine.ingestSourceRows, { profileSlug, sourceKey, rows })`.
+export const {
+  listProfiles,
+  listProfileDefinitions,
+  createSnapshotProfile,
+  upsertDataSource,
+  upsertIndicator,
+  upsertCalculationDefinition,
+  createSnapshot,
+  ingestSourceRows,
+} = exposeApi(components.kpiSnapshot, {
+  auth: async (ctx) => {
+    await requireAdmin(ctx as any);
+  },
+});
+```
 
-Esempio minimo per una tabella “fatture”:
+### 3. Invia i tuoi dati al componente
+
+Le righe che mandi al componente devono essere nel formato:
+
+```ts
+{
+  occurredAt: number;
+  rowData: Record<string, unknown>;
+}
+```
+
+Esempio:
 
 ```ts
 const invoices = await ctx.db.query("invoices").collect();
-const rows = invoices.map((inv) => ({
-  occurredAt: inv.date,
-  rowData: { value: inv.value, date: inv.date, customer: inv.customer /* ... */ },
+const rows = invoices.map((invoice) => ({
+  occurredAt: invoice.date,
+  rowData: {
+    amount: invoice.amount,
+    customer: invoice.customer,
+    date: invoice.date,
+  },
 }));
+
 await ctx.runMutation(components.kpiSnapshot.snapshotEngine.ingestSourceRows, {
-  profileSlug: "my_profile",
+  profileSlug: "finance",
   sourceKey: "invoices",
   rows,
 });
 ```
 
-Puoi esporre questa logica come mutation pubblica (con auth) per un pulsante “Sincronizza fatture” nell’UI, oppure riusarla dentro un’internal mutation chiamata dal cron (vedi passo 4).
+### 4. Crea lo snapshot quando vuoi tu
 
----
+Il componente non ha cron interni. Uno snapshot parte solo quando la tua app chiama `createSnapshot`, tipicamente:
 
-### Passo 3 — UI per configurare profili e snapshot
+- da una pagina admin;
+- da un cron definito in `convex/crons.ts`;
+- da una workflow mutation o action della tua app.
 
-Ti consigliamo di creare una **pagina admin** (es. “Impostazioni KPI” o “Configurazione KPI Snapshot”) che permetta di:
+## Integrazione opzionale con OKRHub
 
-1. **Profili**: elenco profili (`listProfiles`), creazione nuovo profilo (`createSnapshotProfile`), selezione del profilo attivo.
-2. **Data source**: per il profilo selezionato, elenco data source (`listProfileDefinitions`), aggiunta data source (`upsertDataSource`) con **source key** (es. `invoices`, `notices`) e tipo (es. `materialized_rows`). Il source key deve coincidere con quello usato nelle tue mutation di sync.
-3. **Indicatori**: aggiunta indicatori (`upsertIndicator`) con slug e label (es. “Totale fatture”, “Conteggio preavvisi”).
-4. **Regole di calcolo**: aggiunta regole (`upsertCalculationDefinition`) che collegano indicatore, data source, operazione (sum, count, avg, …) e field path (es. `value`).
-5. **Sincronizzazione**: pulsanti che chiamano le tue mutation di sync (es. “Sincronizza fatture”, “Sincronizza preavvisi”) per inviare i dati al componente.
-6. **Snapshot**: pulsante “Crea snapshot” che chiama `createSnapshot`; lista “Ultimi snapshot” con `listSnapshots` e dettaglio con `getSnapshotExplain`. Opzionale: “Simulazione” con `simulateSnapshot` prima di creare.
+Se installi anche `@okrlinkhub/okrhub`, lo stesso helper `exposeApi(...)` può orchestrare il wiring tra i due componenti.
 
-Puoi basarti sulle API esposte dal wrapper (`api.kpiSnapshot.*`). Nel repository trovi una UI pronta di riferimento in [example/src/App.tsx](example/src/App.tsx), pensata come base da adattare alla tua app (React, Vue, ecc.).
+Template pronto, incluso nel package:
 
----
+- [`templates/kpiSnapshotOkrhubWrapper.example.ts`](templates/kpiSnapshotOkrhubWrapper.example.ts)
 
-### Passo 4 — Cron jobs (snapshot pianificati)
-
-Dopo aver configurato almeno un profilo (passo 3), puoi far eseguire sync + snapshot in automatico con un **cron**.
-
-**Dove si definisce il QUANDO**  
-Solo nel file **`convex/crons.ts`** della tua app: lì imposti orario e frequenza (giornaliero, mensile, ecc.) e quale internal mutation chiamare con quali argomenti (es. `profileSlug`). [Doc Convex: Cron Jobs](https://docs.convex.dev/scheduling/cron-jobs).
-
-**Cosa fare quando scatta il cron**  
-Un’**internal mutation** (es. in `convex/kpiSnapshotCron.ts`) che: (1) legge le tue tabelle e chiama `ingestSourceRows` per ogni data source del profilo (stessa logica delle mutation di sync del passo 2), (2) chiama `createSnapshot` del componente con `triggeredBy: "cron"`. Nessun controllo utente (il cron non ha sessione).
-
-**Esempio `convex/crons.ts`** (solo scheduling):
+Esempio:
 
 ```ts
-import { cronJobs } from "convex/server";
-import { internal } from "./_generated/api";
+import { components } from "./_generated/api";
+import { exposeApi } from "@okrlinkhub/kpi-snapshot";
 
-const crons = cronJobs();
-crons.daily(
-  "KPI snapshot giornaliero",
-  { hourUTC: 9, minuteUTC: 15 }, // es. 10:15 ora italiana (CET)
-  internal.kpiSnapshotCron.runScheduledSnapshot,
-  { profileSlug: "finance" }
-);
-export default crons;
+export const {
+  createSnapshot,
+  ensureIndicatorOkrhubLink,
+  syncValuesToOkrhub,
+} = exposeApi(components.kpiSnapshot, {
+  auth: async (ctx) => {
+    // Il tuo controllo accessi
+  },
+  okrhubComponent: components.okrhub,
+  okrhub: {
+    sourceApp: "my-app",
+    sourceUrl: "",
+    processSyncQueueByDefault: false,
+  },
+});
 ```
 
-**Esempio internal mutation** (`convex/kpiSnapshotCron.ts`): definisci `runScheduledSnapshot(profileSlug)` che (1) legge le tabelle dell’app, costruisce le righe nel formato `{ occurredAt, rowData }`, chiama `ingestSourceRows` per ogni `sourceKey` usato dal profilo, (2) chiama `createSnapshot` con `triggeredBy: "cron"`. Restituisci un esito (es. `{ ok: true, noticesCount, snapshotStatus }`) per i log nella dashboard Convex.
+### Flusso consigliato
 
-Importante: in `crons.ts` non va logica di lettura DB né chiamate al componente; solo scheduling. La logica “cosa fare” sta tutta nell’internal mutation.
+1. La tua app crea o aggiorna il profilo KPI.
+2. La tua app materializza i dati sorgente con `ingestSourceRows`.
+3. La tua app collega gli indicatori locali a OKRHub con `ensureIndicatorOkrhubLink(...)`.
+4. La tua app crea uno snapshot con `createSnapshot(...)`.
+5. La tua app invia i nuovi `values` a OKRHub con `syncValuesToOkrhub(...)`.
 
----
+## Modifiche minime richieste nell'app host
 
-## Quando viene eseguito uno snapshot
+Se vuoi usare il package nel modo raccomandato, le modifiche minime lato app sono queste:
 
-Uno snapshot viene eseguito **solo quando la tua app** chiama la mutation `createSnapshot` del componente. Puoi farlo:
+1. Registrare `kpiSnapshot` in `convex/convex.config.ts`.
+2. Creare un file wrapper locale, ad esempio `convex/kpiSnapshot.ts`, che usi `exposeApi(...)`.
+3. Implementare il tuo controllo accessi nell'opzione `auth`.
+4. Creare almeno una mutation o action che legga le tue tabelle e chiami `ingestSourceRows`.
+5. Chiamare `createSnapshot` da UI, cron o automazione.
 
-- da un **pulsante** nell’UI (es. nella pagina admin);
-- da un **cron job** definito nella tua app (passo 4).
+Se integri anche OKRHub, aggiungi inoltre:
 
-Il componente non ha cron interni: espone solo l’API; è l’app che decide quando chiamarla.
+1. Registrazione del componente `okrhub` nella stessa app.
+2. Passaggio di `components.okrhub` a `exposeApi(...)`.
+3. Configurazione di `sourceApp` e, se serve, `sourceUrl`.
+4. Passaggio dei metadati richiesti da OKRHub quando colleghi un indicatore, ad esempio `companyExternalId`, `symbol`, `periodicity`.
 
----
+## Setup ottimizzato LinkHub universe
 
-## Riepilogo file nell’app padre
+La modalità ottimizzata serve quando vuoi che `kpi-snapshot` non sia solo un motore di calcolo, ma anche una sorgente strutturata per OKRHub.
 
-| File | Ruolo |
-|------|--------|
-| `convex/convex.config.ts` | Registra il componente (`app.use(kpiSnapshot, { name: "kpiSnapshot" })`). |
-| `convex/kpiSnapshot.ts` | Wrapper: pass-through a `components.kpiSnapshot.snapshotEngine.*` + auth. |
-| `convex/kpiSnapshotSync.ts` (o simile) | Mutation di sync: leggono le tue tabelle e chiamano `ingestSourceRows`. |
-| `convex/crons.ts` | Definizione del **QUANDO**: schedule + chiamata all’internal mutation. |
-| `convex/kpiSnapshotCron.ts` (o simile) | Internal mutation: sync (stessa logica di sync) + `createSnapshot`. |
+In questo setup:
 
----
+- `indicators.externalId` salva il collegamento tra l'indicatore locale del componente e l'indicatore OKRHub;
+- `values.externalId` salva l'identificativo del valore creato in OKRHub;
+- `listValuesForSync` restituisce i valori locali ancora non collegati;
+- `setIndicatorExternalId` e `setValueExternalId` permettono di backfillare o correggere manualmente i mapping;
+- `syncValuesToOkrhub` esegue la sincronizzazione applicativa minima senza imporre logica di dominio al componente.
 
-## Template wrapper (dettaglio)
+Limite importante: `kpi-snapshot` non può inventare da solo metadati come `companyExternalId`, `symbol` o `periodicity`. Questi dati devono continuare ad arrivare dalla tua app host quando chiami `ensureIndicatorOkrhubLink(...)`.
 
-Il file [templates/kpiSnapshotWrapper.example.ts](templates/kpiSnapshotWrapper.example.ts) mostra un pass-through minimo per: `listProfiles`, `listProfileDefinitions`, `simulateSnapshot`, `listSnapshots`, `getSnapshotExplain`, `createSnapshot`, `ingestSourceRows`. Copialo in `convex/` della tua app, rinominalo (es. `kpiSnapshot.ts`) e sostituisci solo `requireAuth(ctx)` con il tuo controllo (es. `requireAdmin`). Aggiungi altri pass-through se ti servono: `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `replaceProfileDefinitions`, `toggleCalculation`, `listSnapshotRunErrors`.
+## API del wrapper `exposeApi(...)`
 
----
+Funzioni principali esposte dal helper:
 
-## Sync dei dati (dettaglio)
-
-Ogni riga inviata al componente ha la forma `{ occurredAt: number, rowData: object }`. `occurredAt` è un timestamp (es. data fattura); `rowData` contiene i campi usati dalle regole di calcolo (es. `value` per una somma). Il `sourceKey` (es. `invoices`, `notices`) deve coincidere con quello configurato nella data source del profilo (passo 3). Puoi usare la stessa logica di mappatura sia nelle mutation pubbliche (pulsanti “Sincronizza”) sia nell’internal mutation del cron.
-
----
+- lettura: `listProfiles`, `listProfileDefinitions`, `simulateSnapshot`, `listSnapshots`, `getSnapshotExplain`, `listSnapshotRunErrors`
+- configurazione: `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `replaceProfileDefinitions`, `toggleCalculation`
+- esecuzione: `createSnapshot`, `ingestSourceRows`
+- mapping esterni: `getIndicatorBySlug`, `getIndicatorByExternalId`, `setIndicatorExternalId`, `getValueByExternalId`, `listValuesForSync`, `setValueExternalId`
+- integrazione OKRHub: `ensureIndicatorOkrhubLink`, `syncValuesToOkrhub`
 
 ## Modello dati del componente
 
-Tabelle principali: `snapshotProfiles`, `dataSources`, `indicators`, `calculationDefinitions`, `sourceRows` (righe materializzate), `snapshots`, `snapshotRuns`, `snapshotRunItems`, `snapshotValues`, `calculationTraces`, `values` (storico KPI). I valori calcolati restano nelle tabelle del componente; nessun invio verso sistemi esterni.
+Tabelle principali:
 
----
+- `snapshotProfiles`
+- `dataSources`
+- `indicators`
+- `calculationDefinitions`
+- `sourceRows`
+- `snapshots`
+- `snapshotRuns`
+- `snapshotRunItems`
+- `snapshotValues`
+- `calculationTraces`
+- `values`
 
-## Migrazione compatibilità `indicatorLabelSnapshot`
+Campi rilevanti per integrazione:
+
+- `indicators.externalId` opzionale
+- `values.externalId` opzionale
+
+Questi campi restano opzionali per non rompere installazioni esistenti e sono usati solo quando vuoi collegare il componente a OKRHub o a un altro sistema esterno.
+
+## Migrazione da versioni precedenti
+
+### Nuovi `externalId`
+
+Le installazioni esistenti non richiedono una migrazione obbligatoria: i nuovi campi `externalId` sono opzionali.
+
+Puoi popolarli in modo incrementale:
+
+- in fase di `upsertIndicator`, passando `externalId`;
+- con `setIndicatorExternalId`, per collegare indicatori già esistenti;
+- con `setValueExternalId`, per backfillare valori già sincronizzati altrove.
+
+### Compatibilità `indicatorLabelSnapshot`
 
 Per compatibilità con installazioni già in uso, il campo `snapshotValues.indicatorLabelSnapshot` è temporaneamente `optional`.
 
-### Passi consigliati
-
-1. Pubblica/aggiorna il componente con schema opzionale.
-2. Esegui la mutation di backfill su **tutti** i deployment che usano il componente:
+Backfill consigliato:
 
 ```ts
 await ctx.runMutation(
@@ -181,55 +263,29 @@ await ctx.runMutation(
 ```
 
 Opzioni utili:
-- `dryRun: true` per vedere quanti record verrebbero aggiornati senza scrivere.
-- `profileSlug` per migrare un profilo specifico.
 
-3. Dopo che il backfill è completato ovunque, rendi `indicatorLabelSnapshot` nuovamente obbligatorio (`v.string()`) e pubblica una versione successiva.
-
----
-
-## API principali (riferimento)
-
-Configurazione: `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `replaceProfileDefinitions`, `listProfileDefinitions`, `listSnapshotProfiles`.  
-Esecuzione: `ingestSourceRows`, `simulateSnapshot`, `createSnapshot`, `listSnapshots`, `getSnapshotExplain`, `listSnapshotRunErrors`.
-
----
+- `dryRun: true` per stimare gli aggiornamenti senza scrivere
+- `profileSlug` per limitare il backfill a un profilo
 
 ## Ricette regole pronte
 
-Di seguito trovi esempi pratici da usare come base quando chiami `upsertCalculationDefinition`.
-
-### 1) Conteggio totale righe (nessun filtro)
+### Conteggio totale righe
 
 ```ts
 await upsertCalculationDefinition({
-  profileSlug: "my_profile",
+  profileSlug: "finance",
   indicatorSlug: "count_all",
   sourceKey: "invoices",
   operation: "count",
-  // fieldPath opzionale con count
   enabled: true,
 });
 ```
 
-### 2) Conteggio righe con campo valorizzato (`monthRef != null`)
+### Somma di un campo numerico
 
 ```ts
 await upsertCalculationDefinition({
-  profileSlug: "my_profile",
-  indicatorSlug: "count_with_month",
-  sourceKey: "invoices",
-  operation: "count",
-  filters: [{ field: "monthRef", op: "neq", value: null }],
-  enabled: true,
-});
-```
-
-### 3) Somma di un campo numerico (`sum(amount)`)
-
-```ts
-await upsertCalculationDefinition({
-  profileSlug: "my_profile",
+  profileSlug: "finance",
   indicatorSlug: "amount_total",
   sourceKey: "invoices",
   operation: "sum",
@@ -239,11 +295,11 @@ await upsertCalculationDefinition({
 });
 ```
 
-### 4) Conteggio con filtro `in` (categorie selezionate)
+### Conteggio con filtro
 
 ```ts
 await upsertCalculationDefinition({
-  profileSlug: "my_profile",
+  profileSlug: "finance",
   indicatorSlug: "count_selected_categories",
   sourceKey: "invoices",
   operation: "count",
@@ -252,11 +308,11 @@ await upsertCalculationDefinition({
 });
 ```
 
-### 5) Media condizionata (`avg(amount)` con soglia)
+### Media con soglia
 
 ```ts
 await upsertCalculationDefinition({
-  profileSlug: "my_profile",
+  profileSlug: "finance",
   indicatorSlug: "avg_large_invoices",
   sourceKey: "invoices",
   operation: "avg",
@@ -267,24 +323,34 @@ await upsertCalculationDefinition({
 });
 ```
 
-### Note rapide
+Note rapide:
 
-- `count` funziona anche senza `fieldPath`.
-- `sum`, `avg`, `min`, `max`, `distinct_count` richiedono in genere `fieldPath`.
-- Se vuoi escludere record “vuoti”, usa spesso `op: "neq"` con `value: null`.
-- Per debug: usa `simulateSnapshot` prima, poi `createSnapshot`, e controlla `getSnapshotExplain`.
+- `count` può funzionare anche senza `fieldPath`
+- `sum`, `avg`, `min`, `max`, `distinct_count` richiedono in genere `fieldPath`
+- per debug: usa prima `simulateSnapshot`, poi `createSnapshot`, infine `getSnapshotExplain`
 
----
+## FAQ
+
+### Il componente sincronizza automaticamente verso OKRHub?
+
+No. Il package fornisce helper per farlo bene, ma il momento in cui eseguire la sync resta una decisione della tua app host.
+
+### Posso usare `kpi-snapshot` senza OKRHub?
+
+Sì. L'integrazione con OKRHub è completamente opzionale.
+
+### Perché servono ancora modifiche nella mia app?
+
+Perché solo la tua app conosce auth, cron, dati di dominio e identificativi business come `companyExternalId`.
 
 ## Tipi
 
 ```ts
 import type { ComponentApi } from "@okrlinkhub/kpi-snapshot";
+import { exposeApi } from "@okrlinkhub/kpi-snapshot";
 ```
 
----
-
-## Test con convex-test
+## Test con `convex-test`
 
 ```ts
 import { convexTest } from "convex-test";
@@ -294,13 +360,17 @@ const t = convexTest(schema, modules);
 register(t, "kpiSnapshot");
 ```
 
----
+## Sviluppo locale
 
-## Sviluppo locale (dal repo del componente)
+Dalla root del repo:
 
-Dalla root del repo: `npm install` → `npm run build:codegen` → (opzionale) `npm link` e `npm link @okrlinkhub/kpi-snapshot` nell’app di test → `npm run dev`. L’example app usa `example/convex` e importa da `@okrlinkhub/kpi-snapshot/convex.config.js`.
+```bash
+npm install
+npm run build:codegen
+npm run typecheck
+```
 
----
+L'example app usa `example/convex` e importa da `@okrlinkhub/kpi-snapshot/convex.config.js`.
 
 ## Documentazione Convex
 

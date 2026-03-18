@@ -125,10 +125,31 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         string,
         Name
       >;
+      getIndicatorByExternalId: FunctionReference<
+        "query",
+        "internal",
+        { externalId: string },
+        any,
+        Name
+      >;
+      getIndicatorBySlug: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string; slug: string },
+        any,
+        Name
+      >;
       getSnapshotExplain: FunctionReference<
         "query",
         "internal",
         { snapshotId: string },
+        any,
+        Name
+      >;
+      getValueByExternalId: FunctionReference<
+        "query",
+        "internal",
+        { externalId: string },
         any,
         Name
       >;
@@ -181,6 +202,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      listValuesForSync: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; profileSlug?: string },
+        any,
+        Name
+      >;
       replaceProfileDefinitions: FunctionReference<
         "mutation",
         "internal",
@@ -206,6 +234,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           profileSlug: string;
         },
         { created: number; deleted: number },
+        Name
+      >;
+      setIndicatorExternalId: FunctionReference<
+        "mutation",
+        "internal",
+        { externalId: string; indicatorId: string },
+        null,
+        Name
+      >;
+      setValueExternalId: FunctionReference<
+        "mutation",
+        "internal",
+        { externalId: string; valueId: string },
+        null,
         Name
       >;
       simulateSnapshot: FunctionReference<
@@ -265,6 +307,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           category?: string;
           description?: string;
           enabled?: boolean;
+          externalId?: string;
           label: string;
           profileSlug: string;
           slug: string;

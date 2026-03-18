@@ -55,12 +55,14 @@ export default defineSchema({
     unit: v.optional(v.string()),
     category: v.optional(v.string()),
     description: v.optional(v.string()),
+    externalId: v.optional(v.string()),
     enabled: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
     .index("by_profile", ["profileId"])
-    .index("by_profile_and_slug", ["profileId", "slug"]),
+    .index("by_profile_and_slug", ["profileId", "slug"])
+    .index("by_external_id", ["externalId"]),
 
   calculationDefinitions: defineTable({
     profileId: v.id("snapshotProfiles"),
@@ -101,6 +103,7 @@ export default defineSchema({
 
   values: defineTable({
     indicatorId: v.id("indicators"),
+    externalId: v.optional(v.string()),
     value: v.number(),
     measuredAt: v.number(),
     sourceRowId: v.optional(v.id("sourceRows")),
@@ -108,7 +111,8 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_indicator", ["indicatorId"])
-    .index("by_indicator_and_measured_at", ["indicatorId", "measuredAt"]),
+    .index("by_indicator_and_measured_at", ["indicatorId", "measuredAt"])
+    .index("by_external_id", ["externalId"]),
 
   snapshots: defineTable({
     profileId: v.id("snapshotProfiles"),

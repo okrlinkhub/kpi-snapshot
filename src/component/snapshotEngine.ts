@@ -52,6 +52,19 @@ async function getProfileBySlug(
   return profile;
 }
 
+async function getIndicatorByProfileAndSlug(
+  ctx: any,
+  profileId: Id<"snapshotProfiles">,
+  slug: string
+) {
+  return await ctx.db
+    .query("indicators")
+    .withIndex("by_profile_and_slug", (q: any) =>
+      q.eq("profileId", profileId).eq("slug", slug)
+    )
+    .unique();
+}
+
 function getNestedValue(rowData: unknown, fieldPath?: string): unknown {
   if (!fieldPath) return rowData;
   if (rowData == null || typeof rowData !== "object") return undefined;
@@ -317,17 +330,22 @@ export const upsertIndicator = mutation({
     unit: v.optional(v.string()),
     category: v.optional(v.string()),
     description: v.optional(v.string()),
+    externalId: v.optional(v.string()),
     enabled: v.optional(v.boolean()),
   },
   returns: v.id("indicators"),
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug);
-    const existing = await ctx.db
-      .query("indicators")
-      .withIndex("by_profile_and_slug", (q) =>
-        q.eq("profileId", profile._id).eq("slug", args.slug)
-      )
-      .unique();
+    const existing = await getIndicatorByProfileAndSlug(ctx, profile._id, args.slug);
+    if (args.externalId) {
+      const existingExternal = await ctx.db
+        .query("indicators")
+        .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId))
+        .unique();
+      if (existingExternal && existingExternal._id !== existing?._id) {
+        throw new Error(`externalId '${args.externalId}' già associato a un altro indicatore`);
+      }
+    }
     const now = Date.now();
     if (existing) {
       await ctx.db.patch(existing._id, {
@@ -335,6 +353,7 @@ export const upsertIndicator = mutation({
         unit: args.unit,
         category: args.category,
         description: args.description,
+        externalId: args.externalId ?? existing.externalId,
         enabled: args.enabled ?? existing.enabled,
         updatedAt: now,
       });
@@ -347,9 +366,59 @@ export const upsertIndicator = mutation({
       unit: args.unit,
       category: args.category,
       description: args.description,
+      externalId: args.externalId,
       enabled: args.enabled ?? true,
       createdAt: now,
     });
+  },
+});
+
+export const getIndicatorBySlug = query({
+  args: {
+    profileSlug: v.string(),
+    slug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    return await getIndicatorByProfileAndSlug(ctx, profile._id, args.slug);
+  },
+});
+
+export const getIndicatorByExternalId = query({
+  args: {
+    externalId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("indicators")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId))
+      .unique();
+  },
+});
+
+export const setIndicatorExternalId = mutation({
+  args: {
+    indicatorId: v.id("indicators"),
+    externalId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const indicator = await ctx.db.get(args.indicatorId);
+    if (!indicator) {
+      throw new Error("Indicatore non trovato");
+    }
+    const existing = await ctx.db
+      .query("indicators")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId))
+      .unique();
+    if (existing && existing._id !== indicator._id) {
+      throw new Error(`externalId '${args.externalId}' già associato a un altro indicatore`);
+    }
+    await ctx.db.patch(args.indicatorId, {
+      externalId: args.externalId,
+      updatedAt: Date.now(),
+    });
+    return null;
   },
 });
 
@@ -824,6 +893,88 @@ export const createSnapshot = mutation({
       processedCount,
       errorsCount,
     };
+  },
+});
+
+export const getValueByExternalId = query({
+  args: {
+    externalId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("values")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId))
+      .unique();
+  },
+});
+
+export const listValuesForSync = query({
+  args: {
+    profileSlug: v.optional(v.string()),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = Math.max(1, Math.min(args.limit ?? 50, 200));
+    const scanLimit = Math.min(limit * 5, 1000);
+    const profile = args.profileSlug ? await getProfileBySlug(ctx, args.profileSlug) : null;
+    const recentValues = await ctx.db.query("values").order("desc").take(scanLimit);
+
+    const results: Array<
+      Doc<"values"> & {
+        indicatorExternalId?: string;
+        indicatorSlug?: string;
+        profileSlug?: string;
+      }
+    > = [];
+
+    for (const valueRow of recentValues) {
+      if (valueRow.externalId) {
+        continue;
+      }
+      const indicator = await ctx.db.get(valueRow.indicatorId);
+      if (!indicator) {
+        continue;
+      }
+      if (profile && indicator.profileId !== profile._id) {
+        continue;
+      }
+      results.push({
+        ...valueRow,
+        indicatorExternalId: indicator.externalId,
+        indicatorSlug: indicator.slug,
+        profileSlug: profile?.slug,
+      });
+      if (results.length >= limit) {
+        break;
+      }
+    }
+
+    return results;
+  },
+});
+
+export const setValueExternalId = mutation({
+  args: {
+    valueId: v.id("values"),
+    externalId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const valueRow = await ctx.db.get(args.valueId);
+    if (!valueRow) {
+      throw new Error("Valore non trovato");
+    }
+    const existing = await ctx.db
+      .query("values")
+      .withIndex("by_external_id", (q) => q.eq("externalId", args.externalId))
+      .unique();
+    if (existing && existing._id !== valueRow._id) {
+      throw new Error(`externalId '${args.externalId}' già associato a un altro valore`);
+    }
+    await ctx.db.patch(args.valueId, {
+      externalId: args.externalId,
+    });
+    return null;
   },
 });
 

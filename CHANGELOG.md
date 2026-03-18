@@ -6,12 +6,14 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 
 ## [Unreleased]
 
-- Ristrutturazione repo come pacchetto npm `@okrlinkhub/kpi-snapshot`.
-- Componente spostato in `src/component/`, example app in `example/`.
-- Build con `tsconfig.build.json`, codegen e output in `dist/`.
-- Entry point client `src/client/index.ts` (tipi `ComponentApi`, `IndicatorValuePayload`).
-- Test helper `src/test.ts` per convex-test (`register(t, name)`).
-- README, PUBLISHING.md e CHANGELOG.md aggiunti.
+## [0.2.0] - 2026-03-18
+
+- Aggiunti `externalId` opzionali a `indicators` e `values` per il collegamento con OKRHub.
+- Estesa l'API del componente con query e mutation per leggere e aggiornare i mapping esterni.
+- Nuovo helper client-side `exposeApi(...)` per generare wrapper host-side con auth e integrazione opzionale con `@okrlinkhub/okrhub`.
+- Aggiunti helper integrati `ensureIndicatorOkrhubLink` e `syncValuesToOkrhub`.
+- README riscritto per distinguere setup standalone, setup minimo nell'app host e setup ottimizzato LinkHub universe.
+- Aggiornati i template wrapper e aggiunto `templates/kpiSnapshotOkrhubWrapper.example.ts`.
 
 ## [0.1.0] - 2026-02-26
 
