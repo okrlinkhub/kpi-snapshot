@@ -157,8 +157,34 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    listProfileDataSources: queryGeneric({
+      args: { profileSlug: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "dataSource" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.listProfileDataSources, args);
+      },
+    }),
+
     simulateSnapshot: queryGeneric({
-      args: { profileSlug: v.string(), snapshotAt: v.optional(v.number()) },
+      args: {
+        profileSlug: v.string(),
+        snapshotAt: v.optional(v.number()),
+        sourcePayloads: v.optional(
+          v.array(
+            v.object({
+              sourceKey: v.string(),
+              rows: v.array(
+                v.object({
+                  occurredAt: v.number(),
+                  rowData: v.any(),
+                })
+              ),
+            })
+          )
+        ),
+      },
       handler: async (ctx, args) => {
         if (options?.auth) {
           await options.auth(ctx, { type: "read", entityType: "snapshot" });
@@ -174,6 +200,29 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           await options.auth(ctx, { type: "read", entityType: "snapshot" });
         }
         return await ctx.runQuery(component.snapshotEngine.listSnapshots, args);
+      },
+    }),
+
+    listSnapshotValues: queryGeneric({
+      args: { snapshotId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotValue" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.listSnapshotValues, args);
+      },
+    }),
+
+    getSnapshotValueEvidenceDownloadUrl: queryGeneric({
+      args: { snapshotValueId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotEvidence" });
+        }
+        return await ctx.runQuery(
+          component.snapshotEngine.getSnapshotValueEvidenceDownloadUrl,
+          args
+        );
       },
     }),
 
@@ -330,39 +379,6 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
-    createSnapshot: mutationGeneric({
-      args: {
-        profileSlug: v.string(),
-        snapshotAt: v.optional(v.number()),
-        triggeredBy: v.optional(v.string()),
-        note: v.optional(v.string()),
-      },
-      handler: async (ctx, args) => {
-        if (options?.auth) {
-          await options.auth(ctx, { type: "insert", entityType: "snapshot" });
-        }
-        return await ctx.runMutation(component.snapshotEngine.createSnapshot, args);
-      },
-    }),
-
-    ingestSourceRows: mutationGeneric({
-      args: {
-        profileSlug: v.string(),
-        sourceKey: v.string(),
-        rows: v.array(
-          v.object({
-            occurredAt: v.number(),
-            rowData: v.any(),
-          })
-        ),
-      },
-      handler: async (ctx, args) => {
-        if (options?.auth) {
-          await options.auth(ctx, { type: "insert", entityType: "sourceRows" });
-        }
-        return await ctx.runMutation(component.snapshotEngine.ingestSourceRows, args);
-      },
-    }),
 
     getIndicatorBySlug: queryGeneric({
       args: {

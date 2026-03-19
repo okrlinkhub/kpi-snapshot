@@ -6,6 +6,16 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-19
+
+- Rimossa esplicitamente la tabella `sourceRows` dal componente.
+- `createSnapshot` e `simulateSnapshot` lavorano ora su `sourcePayloads` passati dall'app host.
+- Ogni `snapshotValue` genera e salva la propria evidence CSV su storage Convex con `evidenceRef`.
+- Aggiunti i metadati evidence su `snapshotValues` e `snapshotRunItems`.
+- Rimossi `values.sourceRowId` e `calculationTraces.sampleRowIds`, sostituiti da preview e metadata file-based.
+- Esteso `exposeApi(...)` con `listProfileDataSources`, `listSnapshotValues` e `getSnapshotValueEvidenceDownloadUrl`.
+- README aggiornato con migrazione obbligatoria: svuotare `sourceRows` prima dell'upgrade.
+
 ## [0.2.0] - 2026-03-18
 
 - Aggiunti `externalId` opzionali a `indicators` e `values` per il collegamento con OKRHub.

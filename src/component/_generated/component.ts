@@ -83,6 +83,23 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     snapshotEngine: {
+      attachSnapshotValueEvidence: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          uploads: Array<{
+            fileName: string;
+            mimeType: string;
+            rowCount: number;
+            sha256?: string;
+            snapshotRunItemId: string;
+            snapshotValueId: string;
+            storageId: string;
+          }>;
+        },
+        null,
+        Name
+      >;
       backfillIndicatorLabelSnapshot: FunctionReference<
         "mutation",
         "internal",
@@ -92,24 +109,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           skippedAlreadySet: number;
           skippedMissingIndicator: number;
           updated: number;
-        },
-        Name
-      >;
-      createSnapshot: FunctionReference<
-        "mutation",
-        "internal",
-        {
-          note?: string;
-          profileSlug: string;
-          snapshotAt?: number;
-          triggeredBy?: string;
-        },
-        {
-          errorsCount: number;
-          processedCount: number;
-          snapshotId: string;
-          snapshotRunId: string;
-          status: "success" | "error";
         },
         Name
       >;
@@ -123,6 +122,35 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           slug: string;
         },
         string,
+        Name
+      >;
+      createSnapshotRun: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          note?: string;
+          profileSlug: string;
+          snapshotAt?: number;
+          sourcePayloads: Array<{
+            rows: Array<{ occurredAt: number; rowData: any }>;
+            sourceKey: string;
+          }>;
+          triggeredBy?: string;
+        },
+        {
+          errorsCount: number;
+          evidencePayloads: Array<{
+            csvContent: string;
+            fileName: string;
+            rowCount: number;
+            snapshotRunItemId: string;
+            snapshotValueId: string;
+          }>;
+          processedCount: number;
+          snapshotId: string;
+          snapshotRunId: string;
+          status: "success" | "error";
+        },
         Name
       >;
       getIndicatorByExternalId: FunctionReference<
@@ -146,6 +174,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      getSnapshotValueEvidenceDownloadUrl: FunctionReference<
+        "query",
+        "internal",
+        { snapshotValueId: string },
+        string | null,
+        Name
+      >;
       getValueByExternalId: FunctionReference<
         "query",
         "internal",
@@ -162,6 +197,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           sourceKey: string;
         },
         { inserted: number },
+        Name
+      >;
+      listProfileDataSources: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        any,
         Name
       >;
       listProfileDefinitions: FunctionReference<
@@ -199,6 +241,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { limit?: number; profileSlug?: string },
+        any,
+        Name
+      >;
+      listSnapshotValues: FunctionReference<
+        "query",
+        "internal",
+        { snapshotId: string },
         any,
         Name
       >;
@@ -253,7 +302,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       simulateSnapshot: FunctionReference<
         "query",
         "internal",
-        { profileSlug: string; snapshotAt?: number },
+        {
+          profileSlug: string;
+          snapshotAt?: number;
+          sourcePayloads?: Array<{
+            rows: Array<{ occurredAt: number; rowData: any }>;
+            sourceKey: string;
+          }>;
+        },
         any,
         Name
       >;

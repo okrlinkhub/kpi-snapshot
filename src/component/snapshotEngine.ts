@@ -22,6 +22,19 @@ const sourceRowInputValidator = v.object({
   rowData: v.any(),
 });
 
+const sourcePayloadValidator = v.object({
+  sourceKey: v.string(),
+  rows: v.array(sourceRowInputValidator),
+});
+
+const evidenceUploadValidator = v.object({
+  snapshotRunItemId: v.id("snapshotRunItems"),
+  snapshotValueId: v.id("snapshotValues"),
+  fileName: v.string(),
+  rowCount: v.number(),
+  csvContent: v.string(),
+});
+
 type Operation = "sum" | "count" | "avg" | "min" | "max" | "distinct_count";
 
 type FilterRule = {
@@ -30,12 +43,17 @@ type FilterRule = {
   value: unknown;
 };
 
+type SourceRowInput = {
+  occurredAt: number;
+  rowData: Record<string, unknown>;
+};
+
 type CalculationResult = {
   inputCount: number;
   rawResult: number | null;
   normalizedResult: number | null;
   warningMessage?: string;
-  sampleRowIds: Array<Id<"sourceRows">>;
+  filteredRows: Array<SourceRowInput>;
 };
 
 async function getProfileBySlug(
@@ -114,7 +132,7 @@ function matchesFilters(rowData: unknown, filters: unknown): boolean {
 }
 
 function computeOperation(
-  rows: Array<Doc<"sourceRows">>,
+  rows: Array<SourceRowInput>,
   operation: Operation,
   fieldPath?: string
 ): number | null {
@@ -201,9 +219,62 @@ function normalizeIndicatorLabelSnapshot(label: string): string {
   return label.replace(/\s+/g, " ").trim();
 }
 
+function normalizeSourceRows(rows: Array<SourceRowInput>, snapshotAt: number): Array<SourceRowInput> {
+  return rows
+    .filter((row) => row.occurredAt <= snapshotAt)
+    .map((row) => ({
+      occurredAt: row.occurredAt,
+      rowData:
+        row.rowData && typeof row.rowData === "object"
+          ? (row.rowData as Record<string, unknown>)
+          : {},
+    }));
+}
+
+function escapeCsvValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+
+  if (typeof value === "object") {
+    return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
+  }
+
+  const raw = String(value).replace(/\r?\n/g, " ");
+  if (raw.includes('"') || raw.includes(",") || raw.includes(";")) {
+    return `"${raw.replace(/"/g, '""')}"`;
+  }
+  return raw;
+}
+
+function buildEvidenceCsv(rows: Array<SourceRowInput>): string {
+  if (rows.length === 0) {
+    return "occurredAt,rowData\n";
+  }
+
+  const fieldSet = new Set<string>(["occurredAt"]);
+  for (const row of rows) {
+    Object.keys(row.rowData || {}).forEach((key) => fieldSet.add(key));
+  }
+
+  const headers = Array.from(fieldSet);
+  const body = rows.map((row) =>
+    headers
+      .map((header) => {
+        if (header === "occurredAt") {
+          return escapeCsvValue(row.occurredAt);
+        }
+        return escapeCsvValue(row.rowData?.[header]);
+      })
+      .join(",")
+  );
+
+  return `${headers.join(",")}\n${body.join("\n")}`;
+}
+
 function runSingleDefinition(
   definition: Doc<"calculationDefinitions">,
-  rows: Array<Doc<"sourceRows">>
+  rows: Array<SourceRowInput>
 ): CalculationResult {
   const filteredRows = rows.filter((row) => matchesFilters(row.rowData, definition.filters));
   const rawResult = computeOperation(
@@ -222,7 +293,7 @@ function runSingleDefinition(
     rawResult,
     normalizedResult,
     warningMessage,
-    sampleRowIds: filteredRows.slice(0, 10).map((row) => row._id),
+    filteredRows,
   };
 }
 
@@ -628,6 +699,19 @@ export const listProfileDefinitions = query({
   },
 });
 
+export const listProfileDataSources = query({
+  args: {
+    profileSlug: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug);
+    return await ctx.db
+      .query("dataSources")
+      .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+      .collect();
+  },
+});
+
 export const ingestSourceRows = mutation({
   args: {
     profileSlug: v.string(),
@@ -637,28 +721,11 @@ export const ingestSourceRows = mutation({
   returns: v.object({
     inserted: v.number(),
   }),
-  handler: async (ctx, args) => {
-    const profile = await getProfileBySlug(ctx, args.profileSlug);
-    const dataSource = await ctx.db
-      .query("dataSources")
-      .withIndex("by_profile_and_source_key", (q) =>
-        q.eq("profileId", profile._id).eq("sourceKey", args.sourceKey)
-      )
-      .unique();
-    if (!dataSource) {
-      throw new Error(`Data source '${args.sourceKey}' non trovata`);
-    }
-    const now = Date.now();
-    for (const row of args.rows) {
-      await ctx.db.insert("sourceRows", {
-        profileId: profile._id,
-        dataSourceId: dataSource._id,
-        occurredAt: row.occurredAt,
-        rowData: row.rowData,
-        ingestedAt: now,
-      });
-    }
-    return { inserted: args.rows.length };
+  handler: async (_ctx, _args) => {
+    throw new Error(
+      "ingestSourceRows è stato rimosso in kpi-snapshot@1.0.0. " +
+        "Passa i payload sorgente direttamente a createSnapshot/simulateSnapshot."
+    );
   },
 });
 
@@ -666,6 +733,7 @@ export const simulateSnapshot = query({
   args: {
     profileSlug: v.string(),
     snapshotAt: v.optional(v.number()),
+    sourcePayloads: v.optional(v.array(sourcePayloadValidator)),
   },
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug);
@@ -688,16 +756,13 @@ export const simulateSnapshot = query({
     const enabledDefinitions = definitions.filter((definition) => definition.enabled);
     const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]));
     const dataSourcesById = new Map(dataSources.map((source) => [source._id, source]));
-
-    const rowsByDataSource = new Map<Id<"dataSources">, Array<Doc<"sourceRows">>>();
+    const payloadBySourceKey = new Map(
+      (args.sourcePayloads ?? []).map((payload) => [payload.sourceKey, payload.rows])
+    );
+    const rowsByDataSource = new Map<Id<"dataSources">, Array<SourceRowInput>>();
     for (const source of dataSources) {
-      const sourceRows = await ctx.db
-        .query("sourceRows")
-        .withIndex("by_data_source_and_occurred_at", (q) =>
-          q.eq("dataSourceId", source._id).lte("occurredAt", snapshotAt)
-        )
-        .collect();
-      rowsByDataSource.set(source._id, sourceRows);
+      const payloadRows = payloadBySourceKey.get(source.sourceKey) ?? [];
+      rowsByDataSource.set(source._id, normalizeSourceRows(payloadRows, snapshotAt));
     }
 
     return enabledDefinitions.map((definition) => {
@@ -719,12 +784,13 @@ export const simulateSnapshot = query({
   },
 });
 
-export const createSnapshot = mutation({
+export const createSnapshotRun = mutation({
   args: {
     profileSlug: v.string(),
     snapshotAt: v.optional(v.number()),
     triggeredBy: v.optional(v.string()),
     note: v.optional(v.string()),
+    sourcePayloads: v.array(sourcePayloadValidator),
   },
   returns: v.object({
     snapshotId: v.id("snapshots"),
@@ -732,11 +798,20 @@ export const createSnapshot = mutation({
     status: v.union(v.literal("success"), v.literal("error")),
     processedCount: v.number(),
     errorsCount: v.number(),
+    evidencePayloads: v.array(evidenceUploadValidator),
   }),
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug);
     const snapshotAt = args.snapshotAt ?? Date.now();
     const now = Date.now();
+    const dataSources = await ctx.db
+      .query("dataSources")
+      .withIndex("by_profile", (q) => q.eq("profileId", profile._id))
+      .collect();
+    const dataSourcesById = new Map(dataSources.map((source) => [source._id, source]));
+    const payloadBySourceKey = new Map(
+      args.sourcePayloads.map((payload) => [payload.sourceKey, normalizeSourceRows(payload.rows, snapshotAt)])
+    );
     const snapshotId = await ctx.db.insert("snapshots", {
       profileId: profile._id,
       snapshotAt,
@@ -769,14 +844,19 @@ export const createSnapshot = mutation({
 
     let processedCount = 0;
     let errorsCount = 0;
+    const evidencePayloads: Array<{
+      snapshotRunItemId: Id<"snapshotRunItems">;
+      snapshotValueId: Id<"snapshotValues">;
+      fileName: string;
+      rowCount: number;
+      csvContent: string;
+    }> = [];
     for (const definition of enabledDefinitions) {
       const startedAt = Date.now();
-      const dataSourceRows = await ctx.db
-        .query("sourceRows")
-        .withIndex("by_data_source_and_occurred_at", (q) =>
-          q.eq("dataSourceId", definition.dataSourceId).lte("occurredAt", snapshotAt)
-        )
-        .collect();
+      const dataSource = dataSourcesById.get(definition.dataSourceId);
+      const dataSourceRows = dataSource
+        ? payloadBySourceKey.get(dataSource.sourceKey) ?? []
+        : [];
 
       try {
         const result = runSingleDefinition(definition, dataSourceRows);
@@ -804,7 +884,13 @@ export const createSnapshot = mutation({
           createdAt: Date.now(),
         });
         if (result.normalizedResult != null) {
-          await ctx.db.insert("snapshotValues", {
+          const evidenceFileName = [
+            profile.slug,
+            indicator.slug,
+            definition._id,
+            snapshotAt,
+          ].join("__") + ".csv";
+          const snapshotValueId = await ctx.db.insert("snapshotValues", {
             snapshotId,
             snapshotRunId,
             snapshotRunItemId: itemId,
@@ -815,6 +901,13 @@ export const createSnapshot = mutation({
             computedAt: Date.now(),
             ruleHash,
             explainRef: `runItem:${itemId}`,
+          });
+          evidencePayloads.push({
+            snapshotRunItemId: itemId,
+            snapshotValueId,
+            fileName: evidenceFileName,
+            rowCount: result.filteredRows.length,
+            csvContent: buildEvidenceCsv(result.filteredRows),
           });
           await ctx.db.insert("values", {
             indicatorId: definition.indicatorId,
@@ -831,9 +924,10 @@ export const createSnapshot = mutation({
           queryParams: {
             snapshotAt,
             dataSourceId: definition.dataSourceId,
+            sourceKey: dataSource?.sourceKey ?? null,
           },
           resolvedFilters: definition.filters,
-          sampleRowIds: result.sampleRowIds,
+          sampleRowsPreview: result.filteredRows.slice(0, 10),
           warnings: result.warningMessage ? [result.warningMessage] : undefined,
           createdAt: Date.now(),
         });
@@ -862,9 +956,10 @@ export const createSnapshot = mutation({
           queryParams: {
             snapshotAt,
             dataSourceId: definition.dataSourceId,
+            sourceKey: dataSource?.sourceKey ?? null,
           },
           resolvedFilters: definition.filters,
-          sampleRowIds: dataSourceRows.slice(0, 10).map((row) => row._id),
+          sampleRowsPreview: dataSourceRows.slice(0, 10),
           warnings: ["calcolo terminato con errore"],
           notes: error instanceof Error ? error.message : String(error),
           createdAt: Date.now(),
@@ -892,7 +987,48 @@ export const createSnapshot = mutation({
       status: endStatus,
       processedCount,
       errorsCount,
+      evidencePayloads,
     };
+  },
+});
+
+export const attachSnapshotValueEvidence = mutation({
+  args: {
+    uploads: v.array(
+      v.object({
+        snapshotRunItemId: v.id("snapshotRunItems"),
+        snapshotValueId: v.id("snapshotValues"),
+        storageId: v.id("_storage"),
+        fileName: v.string(),
+        rowCount: v.number(),
+        mimeType: v.string(),
+        sha256: v.optional(v.string()),
+      })
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const generatedAt = Date.now();
+    for (const upload of args.uploads) {
+      const evidenceRef = String(upload.storageId);
+      await ctx.db.patch(upload.snapshotRunItemId, {
+        evidenceRef,
+        evidenceFileName: upload.fileName,
+        evidenceRowCount: upload.rowCount,
+        evidenceGeneratedAt: generatedAt,
+        evidenceMimeType: upload.mimeType,
+        evidenceSha256: upload.sha256,
+      });
+      await ctx.db.patch(upload.snapshotValueId, {
+        evidenceRef,
+        evidenceFileName: upload.fileName,
+        evidenceRowCount: upload.rowCount,
+        evidenceGeneratedAt: generatedAt,
+        evidenceMimeType: upload.mimeType,
+        evidenceSha256: upload.sha256,
+      });
+    }
+    return null;
   },
 });
 
@@ -994,6 +1130,46 @@ export const listSnapshots = query({
       .withIndex("by_profile_and_snapshot_at", (q) => q.eq("profileId", profile._id))
       .order("desc")
       .take(limit);
+  },
+});
+
+export const listSnapshotValues = query({
+  args: {
+    snapshotId: v.id("snapshots"),
+  },
+  handler: async (ctx, args) => {
+    const values = await ctx.db
+      .query("snapshotValues")
+      .withIndex("by_snapshot", (q) => q.eq("snapshotId", args.snapshotId))
+      .collect();
+    return await Promise.all(
+      values.map(async (valueRow) => {
+        const indicator = await ctx.db.get(valueRow.indicatorId);
+        const evidenceDownloadUrl = valueRow.evidenceRef
+          ? await ctx.storage.getUrl(valueRow.evidenceRef as any)
+          : null;
+        return {
+          ...valueRow,
+          indicatorSlug: indicator?.slug ?? null,
+          indicatorUnit: indicator?.unit ?? null,
+          evidenceDownloadUrl,
+        };
+      })
+    );
+  },
+});
+
+export const getSnapshotValueEvidenceDownloadUrl = query({
+  args: {
+    snapshotValueId: v.id("snapshotValues"),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const snapshotValue = await ctx.db.get(args.snapshotValueId);
+    if (!snapshotValue?.evidenceRef) {
+      return null;
+    }
+    return await ctx.storage.getUrl(snapshotValue.evidenceRef as any);
   },
 });
 

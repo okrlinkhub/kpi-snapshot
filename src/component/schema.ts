@@ -90,23 +90,11 @@ export default defineSchema({
     .index("by_profile_and_priority", ["profileId", "priority"])
     .index("by_profile_and_indicator", ["profileId", "indicatorId"]),
 
-  sourceRows: defineTable({
-    profileId: v.id("snapshotProfiles"),
-    dataSourceId: v.id("dataSources"),
-    occurredAt: v.number(),
-    rowData: v.any(),
-    ingestedAt: v.number(),
-  })
-    .index("by_profile", ["profileId"])
-    .index("by_data_source", ["dataSourceId"])
-    .index("by_data_source_and_occurred_at", ["dataSourceId", "occurredAt"]),
-
   values: defineTable({
     indicatorId: v.id("indicators"),
     externalId: v.optional(v.string()),
     value: v.number(),
     measuredAt: v.number(),
-    sourceRowId: v.optional(v.id("sourceRows")),
     rawPayload: v.optional(v.any()),
     createdAt: v.number(),
   })
@@ -161,6 +149,12 @@ export default defineSchema({
     errorMessage: v.optional(v.string()),
     warningMessage: v.optional(v.string()),
     ruleHash: v.string(),
+    evidenceRef: v.optional(v.string()),
+    evidenceFileName: v.optional(v.string()),
+    evidenceRowCount: v.optional(v.number()),
+    evidenceGeneratedAt: v.optional(v.number()),
+    evidenceMimeType: v.optional(v.string()),
+    evidenceSha256: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_snapshot_run", ["snapshotRunId"])
@@ -178,10 +172,17 @@ export default defineSchema({
     computedAt: v.number(),
     ruleHash: v.string(),
     explainRef: v.optional(v.string()),
+    evidenceRef: v.optional(v.string()),
+    evidenceFileName: v.optional(v.string()),
+    evidenceRowCount: v.optional(v.number()),
+    evidenceGeneratedAt: v.optional(v.number()),
+    evidenceMimeType: v.optional(v.string()),
+    evidenceSha256: v.optional(v.string()),
   })
     .index("by_snapshot", ["snapshotId"])
     .index("by_snapshot_and_indicator", ["snapshotId", "indicatorId"])
-    .index("by_indicator", ["indicatorId"]),
+    .index("by_indicator", ["indicatorId"])
+    .index("by_snapshot_run_item", ["snapshotRunItemId"]),
 
   calculationTraces: defineTable({
     snapshotRunId: v.id("snapshotRuns"),
@@ -190,7 +191,7 @@ export default defineSchema({
     definitionId: v.id("calculationDefinitions"),
     queryParams: v.optional(v.any()),
     resolvedFilters: v.optional(v.any()),
-    sampleRowIds: v.optional(v.array(v.id("sourceRows"))),
+    sampleRowsPreview: v.optional(v.array(v.any())),
     warnings: v.optional(v.array(v.string())),
     notes: v.optional(v.string()),
     createdAt: v.number(),

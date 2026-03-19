@@ -142,10 +142,14 @@ export const seedInvoices = mutation({
     }
 
     const kpiComponent = (components as any).kpiSnapshot;
-    await ctx.runMutation(kpiComponent.snapshotEngine.ingestSourceRows, {
+    await ctx.runMutation(kpiComponent.snapshotEngine.createSnapshot, {
       profileSlug,
-      sourceKey: INVOICE_SOURCE,
-      rows,
+      sourcePayloads: [
+        {
+          sourceKey: INVOICE_SOURCE,
+          rows,
+        },
+      ],
     });
 
     return {

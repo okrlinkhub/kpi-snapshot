@@ -22,8 +22,6 @@ async function requireAuth(ctx: { db: any }) {
 export const {
   listProfiles,
   listProfileDefinitions,
-  createSnapshot,
-  ingestSourceRows,
   getIndicatorBySlug,
   listValuesForSync,
   ensureIndicatorOkrhubLink,
@@ -55,7 +53,7 @@ export const {
  *   periodicity: "monthly",
  * });
  *
- * await createSnapshot({ profileSlug: "finance", triggeredBy: "manual" });
+ * await api.kpiSnapshot.createSnapshot({ profileSlug: "finance", triggeredBy: "manual" });
  *
  * await syncValuesToOkrhub({
  *   profileSlug: "finance",
