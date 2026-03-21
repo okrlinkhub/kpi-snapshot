@@ -23,9 +23,9 @@ export const {
   listProfiles,
   listProfileDefinitions,
   getIndicatorBySlug,
-  listValuesForSync,
+  listIntegrationValuesForSync,
   ensureIndicatorOkrhubLink,
-  syncValuesToOkrhub,
+  syncIntegrationValuesToOkrhub,
 } = exposeApi(components.kpiSnapshot, {
   auth: async (ctx) => {
     await requireAuth(ctx as any);
@@ -43,7 +43,7 @@ export const {
  * Esempio:
  * 1. Collega un indicatore locale a OKRHub (crea il parent se manca)
  * 2. Crea snapshot
- * 3. Invia i nuovi values a OKRHub
+ * 3. Invia i nuovi integration values a OKRHub
  *
  * await ensureIndicatorOkrhubLink({
  *   profileSlug: "finance",
@@ -55,7 +55,7 @@ export const {
  *
  * await api.kpiSnapshot.createSnapshot({ profileSlug: "finance", triggeredBy: "manual" });
  *
- * await syncValuesToOkrhub({
+ * await syncIntegrationValuesToOkrhub({
  *   profileSlug: "finance",
  *   processSyncQueue: true,
  * });

@@ -2,25 +2,6 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  externalSources: defineTable({
-    name: v.string(),
-    /** URL of the external Convex deployment or API (passed at runtime, not stored as secret). */
-    deploymentUrl: v.optional(v.string()),
-    /** Generic destination entity identifier (string across component boundary). */
-    targetEntityId: v.string(),
-    authType: v.optional(v.string()),
-    createdAt: v.number(),
-    updatedAt: v.optional(v.number()),
-  }),
-  syncRuns: defineTable({
-    externalSourceId: v.id("externalSources"),
-    startedAt: v.number(),
-    finishedAt: v.optional(v.number()),
-    status: v.string(),
-    errorMessage: v.optional(v.string()),
-    valuesSynced: v.optional(v.number()),
-  }).index("by_external_source", ["externalSourceId"]),
-
   snapshotProfiles: defineTable({
     slug: v.string(),
     name: v.string(),
@@ -35,18 +16,155 @@ export default defineSchema({
     profileId: v.id("snapshotProfiles"),
     sourceKey: v.string(),
     label: v.string(),
+    adapterKey: v.optional(v.string()),
     sourceKind: v.union(
       v.literal("component_table"),
       v.literal("external_reader"),
       v.literal("materialized_rows")
     ),
+    entityType: v.optional(v.string()),
+    scopeDefinition: v.optional(v.any()),
+    selectedFieldKeys: v.array(v.string()),
+    dateFieldKey: v.optional(v.string()),
+    rowKeyStrategy: v.optional(v.string()),
+    schedulePreset: v.optional(
+      v.union(
+        v.literal("manual"),
+        v.literal("daily"),
+        v.literal("weekly_monday"),
+        v.literal("monthly_first_day")
+      )
+    ),
+    fieldCatalog: v.optional(
+      v.array(
+        v.object({
+          key: v.string(),
+          label: v.string(),
+          valueType: v.string(),
+          filterable: v.optional(v.boolean()),
+        })
+      )
+    ),
     metadata: v.optional(v.any()),
     enabled: v.boolean(),
+    status: v.union(
+      v.literal("idle"),
+      v.literal("refreshing"),
+      v.literal("ready"),
+      v.literal("error")
+    ),
+    materializedCount: v.number(),
+    lastRefreshedAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+    activeMaterializationJobId: v.optional(v.id("materializationJobs")),
+    lastFrozenExportId: v.optional(v.id("analyticsExports")),
+    lastSnapshotId: v.optional(v.id("snapshots")),
+    lastSnapshotRunId: v.optional(v.id("snapshotRuns")),
+    archivedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
     .index("by_profile", ["profileId"])
-    .index("by_profile_and_source_key", ["profileId", "sourceKey"]),
+    .index("by_profile_and_source_key", ["profileId", "sourceKey"])
+    .index("by_profile_and_archived_at", ["profileId", "archivedAt"])
+    .index("by_source_key", ["sourceKey"]),
+
+  analyticsMaterializedRows: defineTable({
+    dataSourceId: v.id("dataSources"),
+    sourceKey: v.string(),
+    rowKey: v.string(),
+    sourceRecordId: v.optional(v.string()),
+    sourceEntityType: v.string(),
+    occurredAt: v.number(),
+    rowData: v.any(),
+    updatedAt: v.number(),
+  })
+    .index("by_data_source", ["dataSourceId"])
+    .index("by_source_key", ["sourceKey"])
+    .index("by_data_source_and_row_key", ["dataSourceId", "rowKey"])
+    .index("by_data_source_and_occurred_at", ["dataSourceId", "occurredAt"])
+    .index("by_source_key_and_occurred_at", ["sourceKey", "occurredAt"]),
+
+  materializationJobs: defineTable({
+    profileId: v.id("snapshotProfiles"),
+    dataSourceId: v.id("dataSources"),
+    sourceKey: v.string(),
+    status: v.union(
+      v.literal("staging"),
+      v.literal("purging"),
+      v.literal("inserting"),
+      v.literal("freezing"),
+      v.literal("completed"),
+      v.literal("error")
+    ),
+    triggerKind: v.union(
+      v.literal("manual"),
+      v.literal("schedule"),
+      v.literal("upsert"),
+      v.literal("snapshot")
+    ),
+    requestedBy: v.optional(v.string()),
+    stagedCount: v.number(),
+    insertedCount: v.number(),
+    deletedCount: v.number(),
+    finalRowCount: v.optional(v.number()),
+    errorMessage: v.optional(v.string()),
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+  })
+    .index("by_data_source", ["dataSourceId"])
+    .index("by_data_source_and_created_at", ["dataSourceId", "createdAt"])
+    .index("by_status", ["status"]),
+
+  materializationJobRows: defineTable({
+    jobId: v.id("materializationJobs"),
+    rowIndex: v.number(),
+    rowKey: v.string(),
+    sourceRecordId: v.optional(v.string()),
+    sourceEntityType: v.string(),
+    occurredAt: v.number(),
+    rowData: v.any(),
+    createdAt: v.number(),
+  })
+    .index("by_job", ["jobId"])
+    .index("by_job_and_row_index", ["jobId", "rowIndex"]),
+
+  analyticsExports: defineTable({
+    requestedBy: v.optional(v.string()),
+    name: v.optional(v.string()),
+    status: v.union(
+      v.literal("completed"),
+      v.literal("expired"),
+      v.literal("error")
+    ),
+    dataSourceId: v.id("dataSources"),
+    dataSourceKey: v.string(),
+    configSnapshot: v.any(),
+    filters: v.optional(v.any()),
+    storageId: v.optional(v.id("_storage")),
+    fileName: v.optional(v.string()),
+    rowCount: v.optional(v.number()),
+    usageKind: v.union(v.literal("manual"), v.literal("kpi_snapshot_source")),
+    pinnedByAudit: v.boolean(),
+    auditProfileSlug: v.optional(v.string()),
+    auditSnapshotId: v.optional(v.id("snapshots")),
+    auditSnapshotRunId: v.optional(v.id("snapshotRuns")),
+    materializationJobId: v.optional(v.id("materializationJobs")),
+    regeneratedFromExportId: v.optional(v.id("analyticsExports")),
+    clonedFromExportId: v.optional(v.id("analyticsExports")),
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+    expiresAt: v.optional(v.number()),
+    error: v.optional(v.string()),
+  })
+    .index("by_data_source", ["dataSourceId"])
+    .index("by_data_source_key", ["dataSourceKey"])
+    .index("by_requested_by_and_created", ["requestedBy", "createdAt"])
+    .index("by_audit_snapshot", ["auditSnapshotId"])
+    .index("by_expires", ["expiresAt"])
+    .index("by_pinned_by_audit", ["pinnedByAudit"]),
 
   indicators: defineTable({
     profileId: v.id("snapshotProfiles"),
@@ -88,19 +206,31 @@ export default defineSchema({
   })
     .index("by_profile", ["profileId"])
     .index("by_profile_and_priority", ["profileId", "priority"])
-    .index("by_profile_and_indicator", ["profileId", "indicatorId"]),
+    .index("by_profile_and_indicator", ["profileId", "indicatorId"])
+    .index("by_profile_and_data_source", ["profileId", "dataSourceId"]),
 
-  values: defineTable({
+  integrationValues: defineTable({
+    snapshotValueId: v.id("snapshotValues"),
+    snapshotId: v.id("snapshots"),
+    snapshotRunId: v.id("snapshotRuns"),
+    profileId: v.id("snapshotProfiles"),
     indicatorId: v.id("indicators"),
     externalId: v.optional(v.string()),
     value: v.number(),
     measuredAt: v.number(),
-    rawPayload: v.optional(v.any()),
+    syncStatus: v.union(v.literal("pending"), v.literal("synced")),
+    lastSyncedAt: v.optional(v.number()),
     createdAt: v.number(),
   })
-    .index("by_indicator", ["indicatorId"])
     .index("by_indicator_and_measured_at", ["indicatorId", "measuredAt"])
-    .index("by_external_id", ["externalId"]),
+    .index("by_external_id", ["externalId"])
+    .index("by_snapshot_value", ["snapshotValueId"])
+    .index("by_sync_status_and_measured_at", ["syncStatus", "measuredAt"])
+    .index("by_profile_and_sync_status_and_measured_at", [
+      "profileId",
+      "syncStatus",
+      "measuredAt",
+    ]),
 
   snapshots: defineTable({
     profileId: v.id("snapshotProfiles"),
@@ -113,6 +243,14 @@ export default defineSchema({
     ),
     note: v.optional(v.string()),
     triggeredBy: v.optional(v.string()),
+    triggerKind: v.optional(
+      v.union(
+        v.literal("manual"),
+        v.literal("source_materialization"),
+        v.literal("scheduled_materialization")
+      )
+    ),
+    triggerSourceKey: v.optional(v.string()),
     createdAt: v.number(),
     finishedAt: v.optional(v.number()),
     errorMessage: v.optional(v.string()),
@@ -128,6 +266,14 @@ export default defineSchema({
     status: v.union(v.literal("running"), v.literal("success"), v.literal("error")),
     errorMessage: v.optional(v.string()),
     triggeredBy: v.optional(v.string()),
+    triggerKind: v.optional(
+      v.union(
+        v.literal("manual"),
+        v.literal("source_materialization"),
+        v.literal("scheduled_materialization")
+      )
+    ),
+    triggerSourceKey: v.optional(v.string()),
     definitionsCount: v.number(),
     processedCount: v.number(),
   })
@@ -146,6 +292,7 @@ export default defineSchema({
     rawResult: v.optional(v.number()),
     normalizedResult: v.optional(v.number()),
     durationMs: v.number(),
+    sourceExportIds: v.array(v.id("analyticsExports")),
     errorMessage: v.optional(v.string()),
     warningMessage: v.optional(v.string()),
     ruleHash: v.string(),
@@ -171,6 +318,7 @@ export default defineSchema({
     value: v.number(),
     computedAt: v.number(),
     ruleHash: v.string(),
+    sourceExportIds: v.array(v.id("analyticsExports")),
     explainRef: v.optional(v.string()),
     evidenceRef: v.optional(v.string()),
     evidenceFileName: v.optional(v.string()),
@@ -198,4 +346,62 @@ export default defineSchema({
   })
     .index("by_snapshot_run", ["snapshotRunId"])
     .index("by_snapshot_run_item", ["snapshotRunItemId"]),
+
+  derivedIndicators: defineTable({
+    profileId: v.id("snapshotProfiles"),
+    slug: v.string(),
+    label: v.string(),
+    unit: v.optional(v.string()),
+    description: v.optional(v.string()),
+    formula: v.object({
+      kind: v.union(
+        v.literal("ratio"),
+        v.literal("difference"),
+        v.literal("sum")
+      ),
+      operands: v.array(
+        v.object({
+          indicatorSlug: v.string(),
+          role: v.optional(
+            v.union(
+              v.literal("numerator"),
+              v.literal("denominator"),
+              v.literal("term")
+            )
+          ),
+          weight: v.optional(v.number()),
+        })
+      ),
+    }),
+    enabled: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_profile_and_slug", ["profileId", "slug"]),
+
+  derivedSnapshotValues: defineTable({
+    snapshotId: v.id("snapshots"),
+    snapshotRunId: v.id("snapshotRuns"),
+    profileId: v.id("snapshotProfiles"),
+    derivedIndicatorId: v.id("derivedIndicators"),
+    derivedIndicatorSlug: v.string(),
+    derivedIndicatorLabelSnapshot: v.string(),
+    derivedIndicatorUnit: v.optional(v.string()),
+    formulaKind: v.union(
+      v.literal("ratio"),
+      v.literal("difference"),
+      v.literal("sum")
+    ),
+    value: v.number(),
+    computedAt: v.number(),
+    baseSnapshotValueIds: v.array(v.id("snapshotValues")),
+    baseIndicatorSlugs: v.array(v.string()),
+    sourceExportIds: v.array(v.id("analyticsExports")),
+    formulaSnapshot: v.any(),
+    createdAt: v.number(),
+  })
+    .index("by_snapshot", ["snapshotId"])
+    .index("by_profile", ["profileId"])
+    .index("by_snapshot_and_slug", ["snapshotId", "derivedIndicatorSlug"]),
 });

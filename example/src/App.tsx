@@ -153,8 +153,6 @@ export default function App() {
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>("");
   const [snapshotNote, setSnapshotNote] = useState("manual snapshot from example admin page");
 
-  const sources = useQuery(api.externalSources.listExternalSources);
-  const syncRuns = useQuery(api.externalSources.listSyncRuns, { limit: 10 });
   const invoicesByCategory = useQuery(api.seed.listInvoicesByCategory, { profileSlug });
   const invoices = useQuery(api.seed.listInvoices, { profileSlug, limit: 12 });
   const simulated = useQuery(api.seed.simulateSnapshot, { profileSlug });
@@ -166,7 +164,6 @@ export default function App() {
     selectedSnapshotId ? { snapshotId: selectedSnapshotId as any } : "skip"
   );
 
-  const addSource = useMutation(api.externalSources.addExternalSource);
   const setupDefaultSnapshotConfig = useMutation(api.seed.setupDefaultSnapshotConfig);
   const seedInvoices = useMutation(api.seed.seedInvoices);
   const createManualSnapshot = useMutation(api.seed.createManualSnapshot);
@@ -508,8 +505,7 @@ export default function App() {
                 setIsBusy(true);
                 try {
                   await setupDefaultSnapshotConfig({ profileSlug });
-                  await addSource({ name: "Invoices Source", targetEntityId: "example-target" });
-                  setOpMessage("Setup demo completato: profilo + regole base + external source.");
+                  setOpMessage("Setup demo completato: profilo + regole base.");
                 } finally {
                   setIsBusy(false);
                 }
@@ -798,31 +794,6 @@ export default function App() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900/70 p-4">
-            <h2 className="text-lg font-semibold mb-2">External sources + sync runs</h2>
-            {sources && sources.length > 0 && (
-              <ul className="list-disc pl-5 space-y-1 text-sm mb-3">
-                {sources.map((s: any) => (
-                  <li key={s._id}>
-                    {s.name} - <code>{s.targetEntityId}</code>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {syncRuns === undefined ? (
-              <p className="text-slate-500">Caricamento…</p>
-            ) : syncRuns.length === 0 ? (
-              <p className="text-slate-600 dark:text-slate-400">Nessun sync run.</p>
-            ) : (
-              <ul className="list-disc pl-5 space-y-1 text-sm">
-                {syncRuns.map((r: any) => (
-                  <li key={r._id}>
-                    {r.status} - {new Date(r.startedAt).toISOString()}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
         </section>
       )}
     </main>

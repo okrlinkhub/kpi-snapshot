@@ -29,21 +29,71 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 
 ## Cosa fa il package e cosa resta all'app host
 
-`kpi-snapshot` 1.0.0 si occupa di:
+`kpi-snapshot` 2.x si occupa di:
 
 - definizione dei profili e delle regole di calcolo;
-- ricezione di payload sorgente effimeri al momento di `createSnapshot` / `simulateSnapshot`;
+- possesso delle `dataSources` del profilo e delle loro righe materializzate;
+- generazione di export CSV frozen per data source, con persistenza su storage Convex;
 - generazione di `snapshot`, `snapshotValues` e storico `values`;
-- generazione di un CSV evidence per ogni `snapshotValue`, salvato su storage Convex e referenziato via `evidenceRef`;
+- audit interno `snapshotValue -> sourceExportIds`;
+- calcolo di indicatori derivati direttamente nel componente;
 - persistenza opzionale di `externalId` su `indicators` e `values`;
 - helper client-side `exposeApi(...)` per ridurre il boilerplate nell'app host.
 
 La tua app host continua a possedere:
 
 - autenticazione e autorizzazione;
-- lettura e normalizzazione dei dati di dominio;
+- adapter di lettura e normalizzazione dei dati di dominio;
 - scheduling dei cron;
 - metadati di business necessari a OKRHub, ad esempio `companyExternalId`, `symbol` e `periodicity`.
+
+## Linea guida cron per tutti i consumer
+
+Per mantenere il componente semplice da distribuire e replicare su consumer diversi, `kpi-snapshot` non registra cron runtime e non richiede componenti cron dedicati.
+
+Ogni consumer deve definire **3 cron statici** nel proprio `convex/crons.ts`:
+
+- uno per le source con preset `daily`
+- uno per le source con preset `weekly_monday`
+- uno per le source con preset `monthly_first_day`
+
+Il package mantiene solo:
+
+- i preset di schedule nella tabella `dataSources`
+- la pipeline batch-safe di materializzazione
+- l'auto trigger di `createSnapshotRun` dopo ogni materializzazione riuscita
+
+Esempio consigliato:
+
+```ts
+import { cronJobs } from "convex/server";
+import { internal } from "./_generated/api";
+
+const crons = cronJobs();
+
+crons.cron(
+  "kpi-snapshot-refresh-daily",
+  "0 0 * * *",
+  internal.analyticsExports.runScheduledRefreshes,
+  { schedulePreset: "daily" }
+);
+
+crons.cron(
+  "kpi-snapshot-refresh-weekly-monday",
+  "0 0 * * 1",
+  internal.analyticsExports.runScheduledRefreshes,
+  { schedulePreset: "weekly_monday" }
+);
+
+crons.cron(
+  "kpi-snapshot-refresh-monthly-first-day",
+  "0 0 1 * *",
+  internal.analyticsExports.runScheduledRefreshes,
+  { schedulePreset: "monthly_first_day" }
+);
+
+export default crons;
+```
 
 ## Setup minimo nell'app host
 
@@ -97,22 +147,26 @@ export const {
 });
 ```
 
-### 3. Prepara i tuoi payload sorgente
+### 3. Registra i tuoi adapter dominio
 
-Le righe che mandi al componente devono essere nel formato:
+L'app host deve solo saper leggere il proprio dominio e produrre righe materializzate nel formato:
 
 ```ts
 {
+  rowKey: string;
   occurredAt: number;
   rowData: Record<string, unknown>;
+  sourceRecordId?: string;
+  sourceEntityType?: string;
 }
 ```
 
-Esempio:
+Esempio adapter:
 
 ```ts
 const invoices = await ctx.db.query("invoices").collect();
 const rows = invoices.map((invoice) => ({
+  rowKey: invoice.number,
   occurredAt: invoice.date,
   rowData: {
     amount: invoice.amount,
@@ -122,31 +176,38 @@ const rows = invoices.map((invoice) => ({
 }));
 ```
 
+L'host aggiorna la data source del componente chiamando il proprio workflow di materializzazione batch-safe.
+
 ### 4. Crea uno snapshot orchestrato dalla tua app host
 
-Il componente non ha cron interni. Uno snapshot parte solo quando la tua app chiama `createSnapshot`, passando i payload sorgente del run corrente, tipicamente:
+Il componente non ha cron interni. La tua app host puo':
+
+- materializzare da UI
+- materializzare dai 3 cron statici del consumer
+- chiamare `createSnapshot` in modo esplicito quando vuole un run storico dedicato
+
+Nel flusso consigliato, la materializzazione host aggiorna la source e il componente fa partire automaticamente `createSnapshotRun`:
 
 ```ts
-await ctx.runMutation(api.kpiSnapshot.createSnapshot, {
+await ctx.runMutation(api.kpiSnapshot.replaceMaterializedRows, {
+  sourceKey: "invoices",
+  rows,
+})
+
+await ctx.runAction(api.kpiSnapshot.createSnapshot, {
   profileSlug: "finance",
-  sourcePayloads: [
-    {
-      sourceKey: "invoices",
-      rows,
-    },
-  ],
 })
 ```
 
 Durante `createSnapshot` orchestrato dalla tua app:
 
-- applica le regole ai payload ricevuti;
+- legge le righe materializzate correnti del profilo;
 - crea un `snapshotRunItem` per ogni definizione attiva;
-- genera un CSV evidence per ogni `snapshotValue`;
-- salva sempre `evidenceRef` e i metadati del file sul `snapshotValue`;
-- mantiene la tracciabilita' fino a `snapshotValue -> snapshotRunItemId -> dataSourceId`.
+- congela una volta sola il dataset di ogni source usata nello snapshot;
+- salva l'export frozen in `analyticsExports`;
+- mantiene la tracciabilita' fino a `snapshotValue -> sourceExportIds -> analyticsExports`.
 
-Tipicamente la tua app chiama `createSnapshot`:
+Tipicamente la tua app usa `createSnapshot`:
 
 - da una pagina admin;
 - da un cron definito in `convex/crons.ts`;
@@ -188,8 +249,10 @@ export const {
 1. La tua app crea o aggiorna il profilo KPI.
 2. La tua app legge e normalizza i dati sorgente di dominio.
 3. La tua app collega gli indicatori locali a OKRHub con `ensureIndicatorOkrhubLink(...)`.
-4. La tua app crea uno snapshot con una action/mutation host `createSnapshot(...)`, passando `sourcePayloads` al componente.
-5. La tua app invia i nuovi `values` a OKRHub con `syncValuesToOkrhub(...)`.
+4. La tua app materializza le righe dominio con un workflow host batch-safe.
+5. I 3 cron statici del consumer richiamano `runScheduledRefreshes` usando i preset della source.
+6. La tua app crea uno snapshot manuale con `createSnapshot(...)` solo quando vuole un run storico esplicito.
+7. La tua app invia i nuovi `values` a OKRHub con `syncValuesToOkrhub(...)`.
 
 ## Modifiche minime richieste nell'app host
 
@@ -199,7 +262,8 @@ Se vuoi usare il package nel modo raccomandato, le modifiche minime lato app son
 2. Creare un file wrapper locale, ad esempio `convex/kpiSnapshot.ts`, che usi `exposeApi(...)`.
 3. Implementare il tuo controllo accessi nell'opzione `auth`.
 4. Creare almeno una mutation o action che legga le tue tabelle e costruisca `sourcePayloads`.
-5. Chiamare la tua action/mutation host `createSnapshot` da UI, cron o automazione.
+5. Definire i 3 cron statici del consumer che richiamano `runScheduledRefreshes`.
+6. Chiamare la tua action/mutation host `createSnapshot` da UI o automazione quando serve uno snapshot manuale.
 
 Se integri anche OKRHub, aggiungi inoltre:
 
@@ -226,8 +290,8 @@ Limite importante: `kpi-snapshot` non può inventare da solo metadati come `comp
 
 Funzioni principali esposte dal helper:
 
-- lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `simulateSnapshot`, `listSnapshots`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`
-- configurazione: `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `replaceProfileDefinitions`, `toggleCalculation`
+- lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
+- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `replaceProfileDefinitions`, `toggleCalculation`
 - esecuzione: orchestrazione host-side di `createSnapshot`
 - mapping esterni: `getIndicatorBySlug`, `getIndicatorByExternalId`, `setIndicatorExternalId`, `getValueByExternalId`, `listValuesForSync`, `setValueExternalId`
 - integrazione OKRHub: `ensureIndicatorOkrhubLink`, `syncValuesToOkrhub`
@@ -238,12 +302,16 @@ Tabelle principali:
 
 - `snapshotProfiles`
 - `dataSources`
+- `analyticsMaterializedRows`
+- `analyticsExports`
 - `indicators`
 - `calculationDefinitions`
+- `derivedIndicators`
 - `snapshots`
 - `snapshotRuns`
 - `snapshotRunItems`
 - `snapshotValues`
+- `derivedSnapshotValues`
 - `calculationTraces`
 - `values`
 
@@ -251,9 +319,9 @@ Campi rilevanti per integrazione:
 
 - `indicators.externalId` opzionale
 - `values.externalId` opzionale
-- `snapshotValues.evidenceRef`
-- `snapshotValues.snapshotRunItemId`
-- `snapshotRunItems.dataSourceId`
+- `snapshotValues.sourceExportIds`
+- `snapshotRunItems.sourceExportIds`
+- `derivedSnapshotValues.sourceExportIds`
 
 Questi campi restano opzionali per non rompere installazioni esistenti e sono usati solo quando vuoi collegare il componente a OKRHub o a un altro sistema esterno.
 
