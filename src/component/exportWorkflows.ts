@@ -25,10 +25,6 @@ type MaterializedRowsBatchResult = {
   nextRowKey: string | null;
 };
 
-type DataSourceWithProfile = Doc<"dataSources"> & {
-  profileSlug?: string;
-};
-
 const exportFieldFilterValidator = v.object({
   fieldKey: v.string(),
   values: v.array(v.string()),
@@ -168,6 +164,7 @@ export const listMaterializedRowsBatch = internalQuery({
 
 export const persistCompletedExport = internalMutation({
   args: {
+    profileId: v.optional(v.string()),
     requestedBy: v.optional(v.string()),
     name: v.optional(v.string()),
     dataSourceId: v.string(),
@@ -192,6 +189,10 @@ export const persistCompletedExport = internalMutation({
     }
     const now = Date.now();
     const exportId = await ctx.db.insert("analyticsExports", {
+      profileId: args.profileId
+        ? (args.profileId as Id<"snapshotProfiles">)
+        : undefined,
+      exportScope: args.profileId ? "profile" : "global",
       requestedBy: args.requestedBy,
       name: args.name,
       status: "completed",
@@ -235,6 +236,7 @@ async function createExportFromPages(
     requestedBy?: string;
     name?: string;
     dataSource: Doc<"dataSources">;
+    profileId?: string;
     filters?: ExportFilters;
     usageKind: "manual" | "kpi_snapshot_source";
     pinnedByAudit: boolean;
@@ -303,6 +305,7 @@ async function createExportFromPages(
   )}-${now}.csv`;
   return await ctx.runMutation(internal.exportWorkflows.persistCompletedExport, {
     requestedBy: args.requestedBy,
+    profileId: args.profileId,
     name: args.name,
     dataSourceId: String(args.dataSource._id),
     filters: args.filters,
@@ -322,6 +325,7 @@ async function createExportFromPages(
 
 export const requestExport = action({
   args: {
+    profileSlug: v.optional(v.string()),
     requestedBy: v.optional(v.string()),
     name: v.optional(v.string()),
     dataSourceKey: v.string(),
@@ -330,7 +334,13 @@ export const requestExport = action({
   },
   returns: v.string(),
   handler: async (ctx, args): Promise<string> => {
-    const dataSource: DataSourceWithProfile | null = await ctx.runQuery(
+    const profile = args.profileSlug
+      ? await ctx.runQuery(api.snapshotEngine.listSnapshotProfiles, { includeArchived: true })
+      : null;
+    const profileId = args.profileSlug
+      ? profile?.find((row: { slug: string }) => row.slug === args.profileSlug)?._id
+      : undefined;
+    const dataSource: Doc<"dataSources"> | null = await ctx.runQuery(
       api.materialization.getDataSourceByKey,
       {
         sourceKey: args.dataSourceKey,
@@ -343,9 +353,10 @@ export const requestExport = action({
       throw new Error("Rigenera prima la materializzazione della data source");
     }
     return await createExportFromPages(ctx, {
+      profileId: profileId ? String(profileId) : undefined,
       requestedBy: args.requestedBy,
       name: args.name,
-      dataSource: dataSource as Doc<"dataSources">,
+      dataSource,
       filters: args.filters,
       usageKind: "manual",
       pinnedByAudit: false,
@@ -371,7 +382,7 @@ export const regenerateExport = action({
     if (!exportRow) {
       throw new Error("Export non trovato");
     }
-    const dataSource: DataSourceWithProfile | null = await ctx.runQuery(
+    const dataSource: Doc<"dataSources"> | null = await ctx.runQuery(
       api.materialization.getDataSourceByKey,
       {
         sourceKey: exportRow.dataSourceKey,
@@ -381,9 +392,10 @@ export const regenerateExport = action({
       throw new Error("Data source non trovata");
     }
     return await createExportFromPages(ctx, {
+      profileId: exportRow.profileId ? String(exportRow.profileId) : undefined,
       requestedBy: args.requestedBy ?? exportRow.requestedBy,
       name: args.name ?? exportRow.name,
-      dataSource: dataSource as Doc<"dataSources">,
+      dataSource,
       filters: exportRow.filters,
       usageKind: "manual",
       pinnedByAudit: false,
@@ -416,7 +428,7 @@ export const freezeSnapshotExports = internalAction({
   handler: async (ctx, args) => {
     const exportIds: string[] = [];
     for (const sourceKey of args.sourceKeys) {
-      const dataSource: DataSourceWithProfile | null = await ctx.runQuery(api.materialization.getDataSourceByKey, {
+      const dataSource: Doc<"dataSources"> | null = await ctx.runQuery(api.materialization.getDataSourceByKey, {
         sourceKey,
       });
       if (!dataSource) {
@@ -425,7 +437,7 @@ export const freezeSnapshotExports = internalAction({
       const exportId = await createExportFromPages(ctx, {
         requestedBy: args.triggeredBy,
         name: `KPI source ${args.profileSlug} - ${dataSource.label}`,
-        dataSource: dataSource as Doc<"dataSources">,
+        dataSource,
         usageKind: "kpi_snapshot_source",
         pinnedByAudit: true,
         auditProfileSlug: args.profileSlug,

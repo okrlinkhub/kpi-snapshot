@@ -3,6 +3,34 @@ import { mutation, query } from "./_generated/server.js";
 import { components } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 
+const calculationFiltersValidator = v.object({
+  fieldRules: v.array(
+    v.object({
+      field: v.string(),
+      op: v.union(
+        v.literal("eq"),
+        v.literal("neq"),
+        v.literal("gt"),
+        v.literal("gte"),
+        v.literal("lt"),
+        v.literal("lte"),
+        v.literal("in")
+      ),
+      value: v.any(),
+    })
+  ),
+  timeRange: v.optional(
+    v.object({
+      kind: v.union(
+        v.literal("last_month"),
+        v.literal("last_3_months"),
+        v.literal("month_to_date"),
+        v.literal("year_to_date")
+      ),
+    })
+  ),
+});
+
 const DEMO_PROFILE = "finance_demo";
 const INVOICE_SOURCE = "invoices";
 
@@ -63,6 +91,7 @@ export const setupDefaultSnapshotConfig = mutation({
           sourceKey: INVOICE_SOURCE,
           operation: "sum",
           fieldPath: "amount",
+          filters: { fieldRules: [] },
           normalization: { round: 2 },
           priority: 10,
           enabled: true,
@@ -72,6 +101,7 @@ export const setupDefaultSnapshotConfig = mutation({
           indicatorSlug: "invoice_count",
           sourceKey: INVOICE_SOURCE,
           operation: "count",
+          filters: { fieldRules: [] },
           normalization: { coalesce: 0 },
           priority: 20,
           enabled: true,
@@ -82,6 +112,7 @@ export const setupDefaultSnapshotConfig = mutation({
           sourceKey: INVOICE_SOURCE,
           operation: "max",
           fieldPath: "amount",
+          filters: { fieldRules: [] },
           normalization: { round: 2 },
           priority: 30,
           enabled: true,
@@ -92,6 +123,7 @@ export const setupDefaultSnapshotConfig = mutation({
           sourceKey: INVOICE_SOURCE,
           operation: "avg",
           fieldPath: "amount",
+          filters: { fieldRules: [] },
           normalization: { round: 2, coalesce: 0 },
           priority: 40,
           enabled: true,
@@ -363,7 +395,7 @@ export const upsertCalculationDefinition = mutation({
       v.literal("distinct_count")
     ),
     fieldPath: v.optional(v.string()),
-    filters: v.optional(v.any()),
+    filters: calculationFiltersValidator,
     groupBy: v.optional(v.array(v.string())),
     normalization: v.optional(v.any()),
     priority: v.optional(v.number()),
@@ -392,7 +424,7 @@ export const replaceProfileDefinitions = mutation({
           v.literal("distinct_count")
         ),
         fieldPath: v.optional(v.string()),
-        filters: v.optional(v.any()),
+        filters: calculationFiltersValidator,
         groupBy: v.optional(v.array(v.string())),
         normalization: v.optional(v.any()),
         priority: v.optional(v.number()),

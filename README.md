@@ -1,6 +1,6 @@
 # @okrlinkhub/kpi-snapshot
 
-Componente Convex per KPI snapshot dinamici e configurabili: profili, sorgenti dati, regole di calcolo (`sum`, `count`, `avg`, `min`, `max`, `distinct_count`), snapshot manuali o pianificati e tracciamento dei calcoli.
+Componente Convex per KPI snapshot dinamici e configurabili: profili, `dataSources` globali dell'app, membership utenti-profili, regole di calcolo (`sum`, `count`, `avg`, `min`, `max`, `distinct_count`), snapshot manuali o pianificati e tracciamento dei calcoli.
 
 Da questa versione il package può essere usato in due modi:
 
@@ -32,8 +32,10 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 `kpi-snapshot` 2.x si occupa di:
 
 - definizione dei profili e delle regole di calcolo;
-- possesso delle `dataSources` del profilo e delle loro righe materializzate;
-- generazione di export CSV frozen per data source, con persistenza su storage Convex;
+- possesso di una sola tabella `dataSources`, globale e riusabile da tutti i profili;
+- membership utenti-profili tramite `profileMembers`;
+- materializzazione globale per `dataSourceId`, senza binding persistiti source-profilo;
+- generazione di export CSV globali automatici per audit/materializzazione e di export custom opzionalmente `profile-scoped`, con persistenza su storage Convex;
 - generazione di `snapshot`, `snapshotValues` e storico `values`;
 - audit interno `snapshotValue -> sourceExportIds`;
 - calcolo di indicatori derivati direttamente nel componente;
@@ -45,7 +47,56 @@ La tua app host continua a possedere:
 - autenticazione e autorizzazione;
 - adapter di lettura e normalizzazione dei dati di dominio;
 - scheduling dei cron;
+- eventuale orchestrazione UI/admin specifica del prodotto;
 - metadati di business necessari a OKRHub, ad esempio `companyExternalId`, `symbol` e `periodicity`.
+
+## Modello dati risultante
+
+- `dataSources` e` globale nell'app: ogni profilo sceglie quali source usare quando definisce KPI o export custom.
+- `materializationJobs` e `analyticsMaterializedRows` dipendono solo dalla source, non dal profilo.
+- `calculationDefinitions`, `indicators`, `derivedIndicators`, `snapshots` e `reports` restano profile-scoped.
+- `analyticsExports` distingue:
+  - export automatici globali, prodotti da materializzazione o freeze audit;
+  - export custom legati opzionalmente a un profilo.
+- L'host non deve mantenere un catalogo runtime parallelo delle source: entita`, scope, row key e campo data vivono nella tabella componente `dataSourceSettings`, mentre `dataSources` salva solo l'istanza concreta scelta dall'admin.
+
+## Catalogo persistito schema-driven
+
+Da questa revisione il flusso corretto e`:
+
+- l'host carica uno o piu` `schema.ts` Convex tramite action Node lato app;
+- il componente memorizza gli schema importati nel registry `schemaImports`;
+- il componente rigenera automaticamente `dataSourceSettings` a partire da `databaseKey + tableName`;
+- l'import schema non resetta piu` in-line dati materializzati o job; quel wipe vive in un reset job separato e batch-safe;
+- la UI di creazione di una `dataSource` legge solo definizioni generate dal registry;
+- `databaseKey` diversi da `app` sono materializzabili solo se l'host registra un reader esplicito per quel namespace;
+- il solo `sourceKind` supportato e` `materialized_rows`.
+
+Campi principali di `schemaImports`:
+
+- `databaseKey`, `fileName`, `checksum`, `schemaSource`
+- `tables[]` con `tableName`, `tableKey`, `fields[]`, `indexes[]`
+
+Campi principali di `dataSourceSettings`:
+
+- `entityType` derivato (`databaseKey__tableName`)
+- `databaseKey`, `tableName`, `tableKey`, `tableLabel`
+- `allowedScopes`
+- `allowedRowKeyStrategies`
+- `idFieldSuggestions`, `indexSuggestions`
+- `defaultScopeKey`, `defaultRowKeyStrategy`, `defaultDateFieldKey`
+- `defaultSelectedFieldKeys`
+- `fieldCatalog`
+
+API componente rilevanti:
+
+- `listSchemaImports`
+- `replaceSchemaImport`
+- `regenerateCatalogFromSchemas`
+- `deleteSchemaImport`
+- `listCatalogResetJobs`
+- `startCatalogReset`
+- `listDataSourceSettings`
 
 ## Linea guida cron per tutti i consumer
 
@@ -61,7 +112,7 @@ Il package mantiene solo:
 
 - i preset di schedule nella tabella `dataSources`
 - la pipeline batch-safe di materializzazione
-- l'auto trigger di `createSnapshotRun` dopo ogni materializzazione riuscita
+- l'auto trigger opzionale di `createSnapshotRun` quando l'host passa esplicitamente un `profileSlug`
 
 Esempio consigliato:
 
@@ -147,9 +198,16 @@ export const {
 });
 ```
 
-### 3. Registra i tuoi adapter dominio
+### 3. Parsing schema e materializzazione
 
-L'app host deve solo saper leggere il proprio dominio e produrre righe materializzate nel formato:
+L'app host:
+
+- parse gli `schema.ts` con una action Node separata dal componente;
+- salva il risultato nel componente e rigenera il catalogo persistito;
+- materializza tramite un reader registry host-side leggendo `databaseKey`, `tableName`, `fieldCatalog` e `rowKeyStrategy` dal catalogo generato;
+- puo` supportare namespace aggiuntivi (es. `kpiSnapshot`) solo registrando reader dedicati.
+
+Il formato finale delle righe materializzate resta:
 
 ```ts
 {
@@ -177,6 +235,7 @@ const rows = invoices.map((invoice) => ({
 ```
 
 L'host aggiorna la data source del componente chiamando il proprio workflow di materializzazione batch-safe.
+La source resta globale; il `profileSlug` serve solo se vuoi anche concatenare uno snapshot profilo-specifico subito dopo il refresh.
 
 ### 4. Crea uno snapshot orchestrato dalla tua app host
 

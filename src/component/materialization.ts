@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api.js";
 import { internalMutation, mutation, query } from "./_generated/server.js";
-import type { Id, Doc } from "./_generated/dataModel.js";
+import type { Id } from "./_generated/dataModel.js";
 
 const triggerKindValidator = v.union(
   v.literal("manual"),
@@ -39,22 +39,15 @@ function normalizeMaterializedRows(
   }));
 }
 
-async function getProfileBySlug(ctx: any, slug: string) {
-  const profile = await ctx.db
-    .query("snapshotProfiles")
-    .withIndex("by_slug", (q: any) => q.eq("slug", slug))
-    .unique();
-  if (!profile) {
-    throw new Error(`Snapshot profile '${slug}' non trovato`);
-  }
-  return profile;
-}
-
 async function lookupDataSourceByKey(ctx: any, sourceKey: string) {
-  return await ctx.db
+  const dataSource = await ctx.db
     .query("dataSources")
     .withIndex("by_source_key", (q: any) => q.eq("sourceKey", sourceKey))
     .unique();
+  if (!dataSource || dataSource.archivedAt) {
+    return null;
+  }
+  return dataSource;
 }
 
 export const getDataSourceByKey = query({
@@ -64,14 +57,10 @@ export const getDataSourceByKey = query({
   returns: v.union(v.any(), v.null()),
   handler: async (ctx, args) => {
     const dataSource = await lookupDataSourceByKey(ctx, args.sourceKey);
-    if (!dataSource || dataSource.archivedAt) {
+    if (!dataSource) {
       return null;
     }
-    const profile = await ctx.db.get(dataSource.profileId) as Doc<"snapshotProfiles"> | null;
-    return {
-      ...dataSource,
-      profileSlug: profile?.slug,
-    };
+    return dataSource;
   },
 });
 
@@ -83,21 +72,15 @@ export const startMaterializationJob = mutation({
   },
   returns: v.object({
     jobId: v.string(),
-    profileSlug: v.string(),
     sourceKey: v.string(),
   }),
   handler: async (ctx, args) => {
     const dataSource = await lookupDataSourceByKey(ctx, args.sourceKey);
-    if (!dataSource || dataSource.archivedAt || !dataSource.enabled) {
+    if (!dataSource || !dataSource.enabled) {
       throw new Error("Data source non trovata o disabilitata");
-    }
-    const profile = await ctx.db.get(dataSource.profileId) as Doc<"snapshotProfiles"> | null;
-    if (!profile) {
-      throw new Error("Profilo della data source non trovato");
     }
     const now = Date.now();
     const jobId = await ctx.db.insert("materializationJobs", {
-      profileId: dataSource.profileId,
       dataSourceId: dataSource._id,
       sourceKey: dataSource.sourceKey,
       status: "staging",
@@ -117,7 +100,6 @@ export const startMaterializationJob = mutation({
     });
     return {
       jobId: String(jobId),
-      profileSlug: profile.slug,
       sourceKey: dataSource.sourceKey,
     };
   },
@@ -394,28 +376,20 @@ export const purgeArchivedDataSourceRows = internalMutation({
 
 export const deleteDataSource = mutation({
   args: {
-    profileSlug: v.string(),
+    profileSlug: v.optional(v.string()),
     sourceKey: v.string(),
   },
   returns: v.object({
     deleted: v.boolean(),
   }),
   handler: async (ctx, args) => {
-    const profile = await getProfileBySlug(ctx, args.profileSlug);
-    const dataSource = await ctx.db
-      .query("dataSources")
-      .withIndex("by_profile_and_source_key", (q) =>
-        q.eq("profileId", profile._id).eq("sourceKey", args.sourceKey)
-      )
-      .unique();
-    if (!dataSource || dataSource.archivedAt) {
+    const dataSource = await lookupDataSourceByKey(ctx, args.sourceKey);
+    if (!dataSource) {
       throw new Error("Data source non trovata");
     }
     const linkedDefinitions = await ctx.db
       .query("calculationDefinitions")
-      .withIndex("by_profile_and_data_source", (q) =>
-        q.eq("profileId", profile._id).eq("dataSourceId", dataSource._id)
-      )
+      .withIndex("by_data_source", (q) => q.eq("dataSourceId", dataSource._id))
       .take(1);
     if (linkedDefinitions.length > 0) {
       throw new Error("La data source e' ancora usata da regole KPI e non puo' essere eliminata");

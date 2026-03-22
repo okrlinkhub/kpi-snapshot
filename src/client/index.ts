@@ -15,6 +15,7 @@ import type {
 } from "convex/server";
 import { v } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
+import { calculationFiltersValidator } from "../component/lib/calculationFilters.js";
 
 export type { ComponentApi } from "../component/_generated/component.js";
 
@@ -283,16 +284,12 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
 
     upsertDataSource: mutationGeneric({
       args: {
-        profileSlug: v.string(),
+        profileSlug: v.optional(v.string()),
         sourceKey: v.string(),
         label: v.string(),
         adapterKey: v.optional(v.string()),
-        sourceKind: v.union(
-          v.literal("component_table"),
-          v.literal("external_reader"),
-          v.literal("materialized_rows")
-        ),
-        entityType: v.optional(v.string()),
+        sourceKind: v.optional(v.literal("materialized_rows")),
+        entityType: v.string(),
         scopeDefinition: v.optional(v.any()),
         selectedFieldKeys: v.optional(v.array(v.string())),
         dateFieldKey: v.optional(v.string()),
@@ -304,6 +301,12 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
               label: v.string(),
               valueType: v.string(),
               filterable: v.optional(v.boolean()),
+              sourcePath: v.optional(v.string()),
+              sourceTable: v.optional(v.string()),
+              referenceTable: v.optional(v.string()),
+              isSystem: v.optional(v.boolean()),
+              isNullable: v.optional(v.boolean()),
+              isArray: v.optional(v.boolean()),
             })
           )
         ),
@@ -372,7 +375,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           v.literal("distinct_count")
         ),
         fieldPath: v.optional(v.string()),
-        filters: v.optional(v.any()),
+        filters: calculationFiltersValidator,
         groupBy: v.optional(v.array(v.string())),
         normalization: v.optional(v.any()),
         priority: v.optional(v.number()),
@@ -453,7 +456,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
               v.literal("distinct_count")
             ),
             fieldPath: v.optional(v.string()),
-            filters: v.optional(v.any()),
+            filters: calculationFiltersValidator,
             groupBy: v.optional(v.array(v.string())),
             normalization: v.optional(v.any()),
             priority: v.optional(v.number()),

@@ -74,6 +74,7 @@ export declare const components: {
             startDate?: number;
           };
           name?: string;
+          profileSlug?: string;
           requestedBy?: string;
         },
         string
@@ -165,7 +166,7 @@ export declare const components: {
       deleteDataSource: FunctionReference<
         "mutation",
         "internal",
-        { profileSlug: string; sourceKey: string },
+        { profileSlug?: string; sourceKey: string },
         { deleted: boolean }
       >;
       failMaterializationJob: FunctionReference<
@@ -200,10 +201,103 @@ export declare const components: {
           sourceKey: string;
           triggerKind: "manual" | "schedule" | "upsert" | "snapshot";
         },
-        { jobId: string; profileSlug: string; sourceKey: string }
+        { jobId: string; sourceKey: string }
+      >;
+    };
+    materializationReader: {
+      listMaterializableRows: FunctionReference<
+        "query",
+        "internal",
+        {
+          dateFieldKey?: string;
+          indexKey?: string;
+          scopeKind: "all" | "last_3_months";
+          tableName: string;
+        },
+        Array<any>
+      >;
+    };
+    schemaRegistry: {
+      deleteSchemaImport: FunctionReference<
+        "mutation",
+        "internal",
+        { schemaImportId: string },
+        null
+      >;
+      listCatalogResetJobs: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<any>
+      >;
+      listSchemaImports: FunctionReference<"query", "internal", {}, Array<any>>;
+      regenerateCatalogFromSchemas: FunctionReference<
+        "mutation",
+        "internal",
+        {},
+        { generatedSettingsCount: number; schemaImportCount: number }
+      >;
+      regenerateSchemaCatalog: FunctionReference<
+        "mutation",
+        "internal",
+        {},
+        { generatedSettingsCount: number; schemaImportCount: number }
+      >;
+      replaceSchemaImport: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          checksum: string;
+          databaseKey: string;
+          fileName: string;
+          schemaSource: string;
+          tables: Array<{
+            defaultDateFieldKey?: string;
+            defaultRowKeyFieldKey?: string;
+            fields: Array<{
+              filterable?: boolean;
+              isArray?: boolean;
+              isNullable?: boolean;
+              isSystem?: boolean;
+              key: string;
+              label: string;
+              referenceTable?: string;
+              sourcePath?: string;
+              sourceTable?: string;
+              valueType: string;
+            }>;
+            indexes: Array<{
+              fields: Array<string>;
+              key: string;
+              label: string;
+            }>;
+            label: string;
+            tableKey: string;
+            tableName: string;
+          }>;
+        },
+        { schemaImportId: string }
+      >;
+      startCatalogReset: FunctionReference<
+        "mutation",
+        "internal",
+        { batchSize?: number; requestedBy?: string },
+        { jobId: string }
       >;
     };
     snapshotEngine: {
+      archiveDataSourceSetting: FunctionReference<
+        "mutation",
+        "internal",
+        { entityType: string },
+        null
+      >;
+      archiveSnapshotProfile: FunctionReference<
+        "mutation",
+        "internal",
+        { profileSlug: string },
+        null
+      >;
       attachSnapshotValueEvidence: FunctionReference<
         "mutation",
         "internal",
@@ -238,7 +332,7 @@ export declare const components: {
           description?: string;
           isActive?: boolean;
           name: string;
-          slug: string;
+          slug?: string;
         },
         string
       >;
@@ -346,6 +440,12 @@ export declare const components: {
         { includeDisabled?: boolean },
         Array<any>
       >;
+      listDataSourceSettings: FunctionReference<
+        "query",
+        "internal",
+        { includeArchived?: boolean },
+        Array<any>
+      >;
       listDerivedIndicators: FunctionReference<
         "query",
         "internal",
@@ -355,7 +455,13 @@ export declare const components: {
       listExports: FunctionReference<
         "query",
         "internal",
-        { includePinned?: boolean; limit?: number; requestedBy?: string },
+        {
+          includeGlobal?: boolean;
+          includePinned?: boolean;
+          limit?: number;
+          profileSlug?: string;
+          requestedBy?: string;
+        },
         Array<any>
       >;
       listIntegrationValuesForSync: FunctionReference<
@@ -376,10 +482,16 @@ export declare const components: {
         { profileSlug: string },
         any
       >;
+      listProfileMembers: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        Array<any>
+      >;
       listSnapshotProfiles: FunctionReference<
         "query",
         "internal",
-        {},
+        { includeArchived?: boolean },
         Array<any>
       >;
       listSnapshotRunErrors: FunctionReference<
@@ -406,6 +518,12 @@ export declare const components: {
         { exportId: string; name?: string; requestedBy?: string },
         string
       >;
+      removeProfileMember: FunctionReference<
+        "mutation",
+        "internal",
+        { memberKey: string; profileSlug: string },
+        null
+      >;
       replaceMaterializedRows: FunctionReference<
         "mutation",
         "internal",
@@ -428,7 +546,21 @@ export declare const components: {
           definitions: Array<{
             enabled?: boolean;
             fieldPath?: string;
-            filters?: any;
+            filters: {
+              fieldRuleTree?: any;
+              fieldRules: Array<{
+                field: string;
+                op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+                value: any;
+              }>;
+              timeRange?: {
+                kind:
+                  | "last_month"
+                  | "last_3_months"
+                  | "month_to_date"
+                  | "year_to_date";
+              };
+            };
             groupBy?: Array<string>;
             indicatorSlug: string;
             normalization?: any;
@@ -460,6 +592,7 @@ export declare const components: {
             startDate?: number;
           };
           name?: string;
+          profileSlug?: string;
           requestedBy?: string;
         },
         string
@@ -495,13 +628,39 @@ export declare const components: {
         { definitionId: string; enabled: boolean },
         null
       >;
+      updateSnapshotProfile: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          currentSlug: string;
+          description?: string;
+          isActive?: boolean;
+          name?: string;
+          slug?: string;
+        },
+        string
+      >;
       upsertCalculationDefinition: FunctionReference<
         "mutation",
         "internal",
         {
           enabled?: boolean;
           fieldPath?: string;
-          filters?: any;
+          filters: {
+            fieldRuleTree?: any;
+            fieldRules: Array<{
+              field: string;
+              op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+              value: any;
+            }>;
+            timeRange?: {
+              kind:
+                | "last_month"
+                | "last_3_months"
+                | "month_to_date"
+                | "year_to_date";
+            };
+          };
           groupBy?: Array<string>;
           indicatorSlug: string;
           normalization?: any;
@@ -520,16 +679,22 @@ export declare const components: {
           adapterKey?: string;
           dateFieldKey?: string;
           enabled?: boolean;
-          entityType?: string;
+          entityType: string;
           fieldCatalog?: Array<{
             filterable?: boolean;
+            isArray?: boolean;
+            isNullable?: boolean;
+            isSystem?: boolean;
             key: string;
             label: string;
+            referenceTable?: string;
+            sourcePath?: string;
+            sourceTable?: string;
             valueType: string;
           }>;
           label: string;
           metadata?: any;
-          profileSlug: string;
+          profileSlug?: string;
           rowKeyStrategy?: string;
           schedulePreset?:
             | "manual"
@@ -539,10 +704,49 @@ export declare const components: {
           scopeDefinition?: any;
           selectedFieldKeys?: Array<string>;
           sourceKey: string;
-          sourceKind:
-            | "component_table"
-            | "external_reader"
-            | "materialized_rows";
+          sourceKind?: "materialized_rows";
+        },
+        string
+      >;
+      upsertDataSourceSetting: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          adapterKey?: string;
+          allowedRowKeyStrategies: Array<{ key: string; label: string }>;
+          allowedScopes: Array<{ key: string; label: string }>;
+          databaseKey?: string;
+          defaultDateFieldKey?: string;
+          defaultRowKeyStrategy?: string;
+          defaultScopeKey?: string;
+          defaultSelectedFieldKeys: Array<string>;
+          entityType: string;
+          fieldCatalog: Array<{
+            filterable?: boolean;
+            isArray?: boolean;
+            isNullable?: boolean;
+            isSystem?: boolean;
+            key: string;
+            label: string;
+            referenceTable?: string;
+            sourcePath?: string;
+            sourceTable?: string;
+            valueType: string;
+          }>;
+          idFieldSuggestions?: Array<{ key: string; label: string }>;
+          indexSuggestions?: Array<{
+            fields: Array<string>;
+            key: string;
+            label: string;
+          }>;
+          isActive?: boolean;
+          label: string;
+          metadata?: any;
+          schemaImportId?: string;
+          sourceKind: "materialized_rows";
+          tableKey?: string;
+          tableLabel?: string;
+          tableName?: string;
         },
         string
       >;
@@ -579,6 +783,17 @@ export declare const components: {
           profileSlug: string;
           slug: string;
           unit?: string;
+        },
+        string
+      >;
+      upsertProfileMember: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          assignedBy?: string;
+          isActive?: boolean;
+          memberKey: string;
+          profileSlug: string;
         },
         string
       >;

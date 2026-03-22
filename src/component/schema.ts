@@ -1,5 +1,55 @@
-import { defineSchema, defineTable } from "convex/server";
-import { v } from "convex/values";
+import { defineSchema, defineTable } from 'convex/server'
+import { v } from 'convex/values'
+import { calculationFiltersValidator } from './lib/calculationFilters.js'
+const sourceKindValidator = v.literal('materialized_rows')
+
+const schedulePresetValidator = v.union(
+  v.literal('manual'),
+  v.literal('daily'),
+  v.literal('weekly_monday'),
+  v.literal('monthly_first_day')
+)
+
+const fieldCatalogItemValidator = v.object({
+  key: v.string(),
+  label: v.string(),
+  valueType: v.string(),
+  filterable: v.optional(v.boolean()),
+  sourcePath: v.optional(v.string()),
+  sourceTable: v.optional(v.string()),
+  referenceTable: v.optional(v.string()),
+  isSystem: v.optional(v.boolean()),
+  isNullable: v.optional(v.boolean()),
+  isArray: v.optional(v.boolean()),
+})
+
+const catalogOptionValidator = v.object({
+  key: v.string(),
+  label: v.string(),
+})
+
+const schemaIndexValidator = v.object({
+  key: v.string(),
+  label: v.string(),
+  fields: v.array(v.string()),
+})
+
+const schemaTableValidator = v.object({
+  tableName: v.string(),
+  tableKey: v.string(),
+  label: v.string(),
+  fields: v.array(fieldCatalogItemValidator),
+  indexes: v.array(schemaIndexValidator),
+  defaultDateFieldKey: v.optional(v.string()),
+  defaultRowKeyFieldKey: v.optional(v.string()),
+})
+
+const catalogResetStatusValidator = v.union(
+  v.literal('queued'),
+  v.literal('running'),
+  v.literal('completed'),
+  v.literal('error')
+)
 
 export default defineSchema({
   snapshotProfiles: defineTable({
@@ -8,43 +58,99 @@ export default defineSchema({
     description: v.optional(v.string()),
     isActive: v.boolean(),
     version: v.number(),
+    archivedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
-  }).index("by_slug", ["slug"]),
+  })
+    .index("by_slug", ["slug"])
+    .index("by_archived_at", ["archivedAt"]),
+
+  profileMembers: defineTable({
+    profileId: v.id("snapshotProfiles"),
+    memberKey: v.string(),
+    assignedBy: v.optional(v.string()),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_member_key", ["memberKey"])
+    .index("by_profile_and_member_key", ["profileId", "memberKey"]),
+
+  schemaImports: defineTable({
+    databaseKey: v.string(),
+    fileName: v.string(),
+    checksum: v.string(),
+    schemaSource: v.string(),
+    tables: v.array(schemaTableValidator),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index('by_database_key', ['databaseKey'])
+    .index('by_database_key_and_file_name', ['databaseKey', 'fileName'])
+    .index('by_checksum', ['checksum']),
+
+  catalogResetJobs: defineTable({
+    status: catalogResetStatusValidator,
+    requestedBy: v.optional(v.string()),
+    batchSize: v.number(),
+    currentTableIndex: v.number(),
+    currentTableName: v.optional(v.string()),
+    deletedCount: v.number(),
+    errorMessage: v.optional(v.string()),
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+  })
+    .index('by_status', ['status'])
+    .index('by_created_at', ['createdAt']),
+
+  dataSourceSettings: defineTable({
+    entityType: v.string(),
+    label: v.string(),
+    adapterKey: v.optional(v.string()),
+    sourceKind: sourceKindValidator,
+    databaseKey: v.string(),
+    tableName: v.string(),
+    tableKey: v.string(),
+    tableLabel: v.string(),
+    schemaImportId: v.optional(v.id('schemaImports')),
+    allowedScopes: v.array(catalogOptionValidator),
+    allowedRowKeyStrategies: v.array(catalogOptionValidator),
+    idFieldSuggestions: v.array(catalogOptionValidator),
+    indexSuggestions: v.array(schemaIndexValidator),
+    defaultScopeKey: v.optional(v.string()),
+    defaultRowKeyStrategy: v.optional(v.string()),
+    defaultDateFieldKey: v.optional(v.string()),
+    defaultSelectedFieldKeys: v.array(v.string()),
+    fieldCatalog: v.array(fieldCatalogItemValidator),
+    metadata: v.optional(v.any()),
+    isActive: v.boolean(),
+    archivedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_entity_type", ["entityType"])
+    .index('by_database_key', ['databaseKey'])
+    .index('by_database_key_and_table_name', ['databaseKey', 'tableName'])
+    .index("by_archived_at", ["archivedAt"])
+    .index("by_is_active", ["isActive"]),
 
   dataSources: defineTable({
-    profileId: v.id("snapshotProfiles"),
     sourceKey: v.string(),
     label: v.string(),
     adapterKey: v.optional(v.string()),
-    sourceKind: v.union(
-      v.literal("component_table"),
-      v.literal("external_reader"),
-      v.literal("materialized_rows")
-    ),
+    sourceKind: sourceKindValidator,
     entityType: v.optional(v.string()),
+    databaseKey: v.optional(v.string()),
+    tableName: v.optional(v.string()),
+    tableKey: v.optional(v.string()),
     scopeDefinition: v.optional(v.any()),
     selectedFieldKeys: v.array(v.string()),
     dateFieldKey: v.optional(v.string()),
     rowKeyStrategy: v.optional(v.string()),
-    schedulePreset: v.optional(
-      v.union(
-        v.literal("manual"),
-        v.literal("daily"),
-        v.literal("weekly_monday"),
-        v.literal("monthly_first_day")
-      )
-    ),
-    fieldCatalog: v.optional(
-      v.array(
-        v.object({
-          key: v.string(),
-          label: v.string(),
-          valueType: v.string(),
-          filterable: v.optional(v.boolean()),
-        })
-      )
-    ),
+    schedulePreset: v.optional(schedulePresetValidator),
+    fieldCatalog: v.optional(v.array(fieldCatalogItemValidator)),
     metadata: v.optional(v.any()),
     enabled: v.boolean(),
     status: v.union(
@@ -64,10 +170,10 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
-    .index("by_profile", ["profileId"])
-    .index("by_profile_and_source_key", ["profileId", "sourceKey"])
-    .index("by_profile_and_archived_at", ["profileId", "archivedAt"])
-    .index("by_source_key", ["sourceKey"]),
+    .index("by_source_key", ["sourceKey"])
+    .index("by_archived_at", ["archivedAt"])
+    .index('by_database_key_and_table_name', ['databaseKey', 'tableName'])
+    .index("by_entity_type", ["entityType"]),
 
   analyticsMaterializedRows: defineTable({
     dataSourceId: v.id("dataSources"),
@@ -86,7 +192,6 @@ export default defineSchema({
     .index("by_source_key_and_occurred_at", ["sourceKey", "occurredAt"]),
 
   materializationJobs: defineTable({
-    profileId: v.id("snapshotProfiles"),
     dataSourceId: v.id("dataSources"),
     sourceKey: v.string(),
     status: v.union(
@@ -131,6 +236,8 @@ export default defineSchema({
     .index("by_job_and_row_index", ["jobId", "rowIndex"]),
 
   analyticsExports: defineTable({
+    profileId: v.optional(v.id("snapshotProfiles")),
+    exportScope: v.union(v.literal("global"), v.literal("profile")),
     requestedBy: v.optional(v.string()),
     name: v.optional(v.string()),
     status: v.union(
@@ -161,6 +268,9 @@ export default defineSchema({
   })
     .index("by_data_source", ["dataSourceId"])
     .index("by_data_source_key", ["dataSourceKey"])
+    .index("by_profile", ["profileId"])
+    .index("by_profile_and_created_at", ["profileId", "createdAt"])
+    .index("by_export_scope_and_created_at", ["exportScope", "createdAt"])
     .index("by_requested_by_and_created", ["requestedBy", "createdAt"])
     .index("by_audit_snapshot", ["auditSnapshotId"])
     .index("by_expires", ["expiresAt"])
@@ -195,7 +305,7 @@ export default defineSchema({
       v.literal("distinct_count")
     ),
     fieldPath: v.optional(v.string()),
-    filters: v.optional(v.any()),
+    filters: calculationFiltersValidator,
     groupBy: v.optional(v.array(v.string())),
     normalization: v.optional(v.any()),
     priority: v.number(),
@@ -207,7 +317,8 @@ export default defineSchema({
     .index("by_profile", ["profileId"])
     .index("by_profile_and_priority", ["profileId", "priority"])
     .index("by_profile_and_indicator", ["profileId", "indicatorId"])
-    .index("by_profile_and_data_source", ["profileId", "dataSourceId"]),
+    .index("by_profile_and_data_source", ["profileId", "dataSourceId"])
+    .index("by_data_source", ["dataSourceId"]),
 
   integrationValues: defineTable({
     snapshotValueId: v.id("snapshotValues"),
@@ -404,4 +515,22 @@ export default defineSchema({
     .index("by_snapshot", ["snapshotId"])
     .index("by_profile", ["profileId"])
     .index("by_snapshot_and_slug", ["snapshotId", "derivedIndicatorSlug"]),
-});
+
+  externalSources: defineTable({
+    name: v.string(),
+    deploymentUrl: v.optional(v.string()),
+    targetEntityId: v.string(),
+    authType: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  }).index("by_target_entity", ["targetEntityId"]),
+
+  syncRuns: defineTable({
+    externalSourceId: v.id("externalSources"),
+    startedAt: v.number(),
+    finishedAt: v.optional(v.number()),
+    status: v.string(),
+    errorMessage: v.optional(v.string()),
+    valuesSynced: v.optional(v.number()),
+  }).index("by_external_source", ["externalSourceId"]),
+})

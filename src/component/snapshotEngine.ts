@@ -2,6 +2,17 @@ import { v } from 'convex/values'
 import { internal } from './_generated/api.js'
 import { mutation, query } from './_generated/server.js'
 import type { Doc, Id } from './_generated/dataModel.js'
+import {
+  calculationFiltersValidator,
+  normalizeCalculationFilters,
+  resolveCalculationFilters,
+} from './lib/calculationFilters.js'
+import type {
+  CalculationFieldRule,
+  CalculationFilters,
+  CalculationRuleNode,
+  ResolvedCalculationFilters,
+} from './lib/calculationFilters.js'
 
 const operationValidator = v.union(
   v.literal('sum'),
@@ -12,11 +23,7 @@ const operationValidator = v.union(
   v.literal('distinct_count')
 )
 
-const sourceKindValidator = v.union(
-  v.literal('component_table'),
-  v.literal('external_reader'),
-  v.literal('materialized_rows')
-)
+const sourceKindValidator = v.literal('materialized_rows')
 
 const schedulePresetValidator = v.optional(v.union(
   v.literal('manual'),
@@ -42,6 +49,23 @@ const fieldCatalogItemValidator = v.object({
   label: v.string(),
   valueType: v.string(),
   filterable: v.optional(v.boolean()),
+  sourcePath: v.optional(v.string()),
+  sourceTable: v.optional(v.string()),
+  referenceTable: v.optional(v.string()),
+  isSystem: v.optional(v.boolean()),
+  isNullable: v.optional(v.boolean()),
+  isArray: v.optional(v.boolean()),
+})
+
+const catalogOptionValidator = v.object({
+  key: v.string(),
+  label: v.string(),
+})
+
+const schemaIndexValidator = v.object({
+  key: v.string(),
+  label: v.string(),
+  fields: v.array(v.string()),
 })
 
 const materializedRowInputValidator = v.object({
@@ -88,12 +112,6 @@ const derivedFormulaValidator = v.object({
 type Operation = 'sum' | 'count' | 'avg' | 'min' | 'max' | 'distinct_count'
 type DerivedFormulaKind = 'ratio' | 'difference' | 'sum'
 
-type FilterRule = {
-  field: string
-  op: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'in'
-  value: unknown
-}
-
 type ExportFilters = {
   startDate?: number
   endDate?: number
@@ -122,6 +140,17 @@ type FieldCatalogItem = {
   label: string
   valueType: string
   filterable?: boolean
+  sourcePath?: string
+  sourceTable?: string
+  referenceTable?: string
+  isSystem?: boolean
+  isNullable?: boolean
+  isArray?: boolean
+}
+
+type CatalogOption = {
+  key: string
+  label: string
 }
 
 type CalculationResult = {
@@ -130,6 +159,7 @@ type CalculationResult = {
   normalizedResult: number | null
   warningMessage?: string
   filteredRows: Array<SourceRowInput>
+  resolvedFilters: ResolvedCalculationFilters
 }
 
 type DerivedComputationInput = {
@@ -140,6 +170,7 @@ type DerivedComputationInput = {
 }
 
 type DataSourceDoc = Doc<'dataSources'>
+type DataSourceSettingDoc = Doc<'dataSourceSettings'>
 
 function normalizeIndicatorLabelSnapshot (label: string) {
   return label.replace(/\s+/g, ' ').trim()
@@ -164,7 +195,7 @@ function toFiniteNumber (value: unknown) {
   return value
 }
 
-function applyFilterRule (rowData: unknown, rule: FilterRule) {
+function applyFilterRule (rowData: unknown, rule: CalculationFieldRule) {
   const left = getNestedValue(rowData, rule.field)
   const right = rule.value
 
@@ -188,9 +219,52 @@ function applyFilterRule (rowData: unknown, rule: FilterRule) {
   }
 }
 
-function matchesFilters (rowData: unknown, filters: unknown) {
-  if (!Array.isArray(filters) || filters.length === 0) return true
-  return (filters as Array<FilterRule>).every((rule) => applyFilterRule(rowData, rule))
+function matchesFieldRules (rowData: unknown, fieldRules: CalculationFieldRule[]) {
+  if (fieldRules.length === 0) return true
+  return fieldRules.every((rule) => applyFilterRule(rowData, rule))
+}
+
+function matchesFieldRuleNode (rowData: unknown, node: CalculationRuleNode): boolean {
+  if (node.type === 'rule') {
+    return applyFilterRule(rowData, node.rule)
+  }
+
+  if (node.children.length === 0) {
+    return true
+  }
+
+  if (node.op === 'or') {
+    return node.children.some((child) => matchesFieldRuleNode(rowData, child))
+  }
+
+  return node.children.every((child) => matchesFieldRuleNode(rowData, child))
+}
+
+function filterRowsForDefinition (
+  rows: Array<SourceRowInput>,
+  filters: CalculationFilters,
+  snapshotAt: number
+) {
+  const resolvedFilters = resolveCalculationFilters(filters, snapshotAt)
+  const filteredRows = rows.filter((row) => {
+    if (
+      resolvedFilters.timeRange &&
+      (row.occurredAt < resolvedFilters.timeRange.startMs || row.occurredAt > resolvedFilters.timeRange.endMs)
+    ) {
+      return false
+    }
+
+    if (resolvedFilters.fieldRuleTree.children.length > 0) {
+      return matchesFieldRuleNode(row.rowData, resolvedFilters.fieldRuleTree)
+    }
+
+    return matchesFieldRules(row.rowData, resolvedFilters.fieldRules)
+  })
+
+  return {
+    filteredRows,
+    resolvedFilters,
+  }
 }
 
 function computeOperation (
@@ -312,7 +386,13 @@ function escapeCsvValue (value: unknown) {
   if (typeof value === 'object') {
     return `"${JSON.stringify(value).replace(/"/g, '""')}"`
   }
-  const raw = String(value).replace(/\r?\n/g, ' ')
+  const raw = (
+    typeof value === 'string'
+      ? value
+      : typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint'
+        ? String(value)
+        : JSON.stringify(value)
+  ).replace(/\r?\n/g, ' ')
   if (raw.includes('"') || raw.includes(',') || raw.includes(';')) {
     return `"${raw.replace(/"/g, '""')}"`
   }
@@ -339,9 +419,14 @@ function buildCsv (
 
 function runSingleDefinition (
   definition: Doc<'calculationDefinitions'>,
-  rows: Array<SourceRowInput>
+  rows: Array<SourceRowInput>,
+  snapshotAt: number
 ): CalculationResult {
-  const filteredRows = rows.filter((row) => matchesFilters(row.rowData, definition.filters))
+  const { filteredRows, resolvedFilters } = filterRowsForDefinition(
+    rows,
+    normalizeCalculationFilters(definition.filters),
+    snapshotAt
+  )
   const rawResult = computeOperation(
     filteredRows,
     definition.operation as Operation,
@@ -358,6 +443,7 @@ function runSingleDefinition (
         ? 'groupBy presente ma non ancora applicato in questa versione'
         : undefined,
     filteredRows,
+    resolvedFilters,
   }
 }
 
@@ -398,7 +484,16 @@ function applyExportFilters (
         return true
       }
       const value = row.rowData[fieldFilter.fieldKey]
-      return fieldFilter.values.includes(value == null ? '' : String(value))
+      const normalizedValue = (
+        value == null
+          ? ''
+          : typeof value === 'string'
+            ? value
+            : typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint'
+              ? String(value)
+              : JSON.stringify(value)
+      )
+      return fieldFilter.values.includes(normalizedValue)
     })
   })
 }
@@ -489,22 +584,211 @@ function computeDerivedValue (
   }
 }
 
+function normalizeCatalogOptions (options: CatalogOption[]) {
+  return options
+    .map((option) => ({
+      key: option.key.trim(),
+      label: option.label.trim() || option.key.trim(),
+    }))
+    .filter((option) => option.key.length > 0)
+}
+
+function normalizeFieldCatalog (fieldCatalog: FieldCatalogItem[]) {
+  return fieldCatalog
+    .map((field) => ({
+      key: field.key.trim(),
+      label: field.label.trim() || field.key.trim(),
+      valueType: field.valueType.trim(),
+      filterable: field.filterable,
+    }))
+    .filter((field) => field.key.length > 0 && field.valueType.length > 0)
+}
+
+function ensureUniqueKeys (label: string, values: string[]) {
+  const uniqueValues = new Set(values)
+  if (uniqueValues.size !== values.length) {
+    throw new Error(`Sono presenti chiavi duplicate in ${label}`)
+  }
+}
+
+function validateDataSourceSettingInput (args: {
+  entityType: string
+  label: string
+  databaseKey?: string
+  tableName?: string
+  tableKey?: string
+  tableLabel?: string
+  allowedScopes: CatalogOption[]
+  allowedRowKeyStrategies: CatalogOption[]
+  idFieldSuggestions?: CatalogOption[]
+  indexSuggestions?: Array<{ key: string, label: string, fields: string[] }>
+  defaultScopeKey?: string
+  defaultRowKeyStrategy?: string
+  defaultDateFieldKey?: string
+  defaultSelectedFieldKeys: string[]
+  fieldCatalog: FieldCatalogItem[]
+}) {
+  if (!args.entityType.trim()) {
+    throw new Error('entityType obbligatorio')
+  }
+  if (!args.label.trim()) {
+    throw new Error('label obbligatoria')
+  }
+  if (!(args.databaseKey ?? 'app').trim()) {
+    throw new Error('databaseKey obbligatorio')
+  }
+  if (!(args.tableName ?? args.entityType).trim()) {
+    throw new Error('tableName obbligatorio')
+  }
+  if (!(args.tableKey ?? args.entityType).trim()) {
+    throw new Error('tableKey obbligatorio')
+  }
+  if (!(args.tableLabel ?? args.label).trim()) {
+    throw new Error('tableLabel obbligatoria')
+  }
+
+  const allowedScopes = normalizeCatalogOptions(args.allowedScopes)
+  const allowedRowKeyStrategies = normalizeCatalogOptions(args.allowedRowKeyStrategies)
+  const fieldCatalog = normalizeFieldCatalog(args.fieldCatalog)
+
+  if (allowedScopes.length === 0) {
+    throw new Error('Configura almeno uno scope consentito')
+  }
+  if (allowedRowKeyStrategies.length === 0) {
+    throw new Error('Configura almeno una row key strategy consentita')
+  }
+  if (fieldCatalog.length === 0) {
+    throw new Error('Configura almeno un campo nel field catalog')
+  }
+  if (args.defaultSelectedFieldKeys.length === 0) {
+    throw new Error('Configura almeno un campo selezionato di default')
+  }
+
+  const scopeKeys = allowedScopes.map((option) => option.key)
+  const rowKeyKeys = allowedRowKeyStrategies.map((option) => option.key)
+  const fieldKeys = fieldCatalog.map((field) => field.key)
+  const idFieldKeys = normalizeCatalogOptions(args.idFieldSuggestions ?? []).map((option) => option.key)
+
+  ensureUniqueKeys('allowedScopes', scopeKeys)
+  ensureUniqueKeys('allowedRowKeyStrategies', rowKeyKeys)
+  ensureUniqueKeys('fieldCatalog', fieldKeys)
+  ensureUniqueKeys('defaultSelectedFieldKeys', args.defaultSelectedFieldKeys)
+  ensureUniqueKeys('idFieldSuggestions', idFieldKeys)
+
+  if (args.defaultScopeKey && !scopeKeys.includes(args.defaultScopeKey)) {
+    throw new Error(`defaultScopeKey non valido: ${args.defaultScopeKey}`)
+  }
+  if (args.defaultRowKeyStrategy && !rowKeyKeys.includes(args.defaultRowKeyStrategy)) {
+    throw new Error(`defaultRowKeyStrategy non valida: ${args.defaultRowKeyStrategy}`)
+  }
+  if (args.defaultDateFieldKey && !fieldKeys.includes(args.defaultDateFieldKey)) {
+    throw new Error(`defaultDateFieldKey non valido: ${args.defaultDateFieldKey}`)
+  }
+  for (const fieldKey of args.defaultSelectedFieldKeys) {
+    if (!fieldKeys.includes(fieldKey)) {
+      throw new Error(`Campo di default non valido: ${fieldKey}`)
+    }
+  }
+  for (const fieldKey of idFieldKeys) {
+    if (!fieldKeys.includes(fieldKey)) {
+      throw new Error(`Campo identificativo non valido: ${fieldKey}`)
+    }
+  }
+}
+
+async function getDataSourceSettingByEntityType (ctx: any, entityType?: string) {
+  if (!entityType) {
+    return null
+  }
+  const dataSourceSetting = await ctx.db
+    .query('dataSourceSettings')
+    .withIndex('by_entity_type', (q: any) => q.eq('entityType', entityType))
+    .unique()
+  if (!dataSourceSetting || dataSourceSetting.archivedAt) {
+    return null
+  }
+  return dataSourceSetting
+}
+
+function validateDataSourceSelection (args: {
+  entityType: string
+  scopeKind: string
+  selectedFieldKeys: string[]
+  dateFieldKey?: string
+  rowKeyStrategy?: string
+  dataSourceSetting: DataSourceSettingDoc
+}) {
+  const allowedScopeKeys = new Set(args.dataSourceSetting.allowedScopes.map((scope) => scope.key))
+  const allowedRowKeyKeys = new Set(args.dataSourceSetting.allowedRowKeyStrategies.map((rowKey) => rowKey.key))
+  const validFieldKeys = new Set(args.dataSourceSetting.fieldCatalog.map((field) => field.key))
+
+  if (!allowedScopeKeys.has(args.scopeKind)) {
+    throw new Error(`Scope non supportato per ${args.entityType}: ${args.scopeKind}`)
+  }
+  if (!args.rowKeyStrategy || !allowedRowKeyKeys.has(args.rowKeyStrategy)) {
+    throw new Error(`Row key strategy non valida per ${args.entityType}`)
+  }
+  if (args.selectedFieldKeys.length === 0) {
+    throw new Error('Seleziona almeno un campo per la data source')
+  }
+  for (const selectedFieldKey of args.selectedFieldKeys) {
+    if (!validFieldKeys.has(selectedFieldKey)) {
+      throw new Error(`Campo non supportato per ${args.entityType}: ${selectedFieldKey}`)
+    }
+  }
+  if (args.dateFieldKey && !validFieldKeys.has(args.dateFieldKey)) {
+    throw new Error(`Campo data non supportato per ${args.entityType}: ${args.dateFieldKey}`)
+  }
+}
+
 async function getProfileBySlug (ctx: any, slug: string) {
   const profile = await ctx.db
     .query('snapshotProfiles')
     .withIndex('by_slug', (q: any) => q.eq('slug', slug))
     .unique()
-  if (!profile) {
+  if (!profile || profile.archivedAt) {
     throw new Error(`Snapshot profile '${slug}' non trovato`)
   }
   return profile
 }
 
 async function getDataSourceByKey (ctx: any, sourceKey: string) {
-  return await ctx.db
+  const dataSource = await ctx.db
     .query('dataSources')
     .withIndex('by_source_key', (q: any) => q.eq('sourceKey', sourceKey))
     .unique()
+  if (!dataSource || dataSource.archivedAt) {
+    return null
+  }
+  return dataSource
+}
+
+function slugifyProfileName (value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'profilo'
+}
+
+async function buildUniqueProfileSlug (ctx: any, value: string, excludeProfileId?: Id<'snapshotProfiles'>) {
+  const baseSlug = slugifyProfileName(value)
+  let candidate = baseSlug
+  let attempt = 1
+
+  while (true) {
+    const existing = await ctx.db
+      .query('snapshotProfiles')
+      .withIndex('by_slug', (q: any) => q.eq('slug', candidate))
+      .unique()
+
+    if (!existing || existing._id === excludeProfileId) {
+      return candidate
+    }
+
+    attempt += 1
+    candidate = `${baseSlug}-${attempt}`
+  }
 }
 
 async function getIndicatorByProfileAndSlug (
@@ -560,6 +844,7 @@ async function createCompletedExport (
     requestedBy?: string
     name?: string
     dataSource: DataSourceDoc
+    profileId?: Id<'snapshotProfiles'>
     rows: Array<{ occurredAt: number, rowData: Record<string, unknown> }>
     filters?: ExportFilters
     usageKind: 'manual' | 'kpi_snapshot_source'
@@ -584,6 +869,8 @@ async function createCompletedExport (
   const fileName = `analytics-export-${namePart || args.dataSource.sourceKey}-${now}.csv`
 
   return await ctx.db.insert('analyticsExports', {
+    profileId: args.profileId,
+    exportScope: args.profileId ? 'profile' : 'global',
     requestedBy: args.requestedBy,
     name: args.name,
     status: 'completed',
@@ -633,7 +920,7 @@ async function resolveExportSummaries (
 
 export const createSnapshotProfile = mutation({
   args: {
-    slug: v.string(),
+    slug: v.optional(v.string()),
     name: v.string(),
     description: v.optional(v.string()),
     isActive: v.optional(v.boolean()),
@@ -641,9 +928,12 @@ export const createSnapshotProfile = mutation({
   returns: v.id('snapshotProfiles'),
   handler: async (ctx, args) => {
     const now = Date.now()
+    const nextSlug = args.slug?.trim()
+      ? args.slug.trim()
+      : await buildUniqueProfileSlug(ctx, args.name)
     const existing = await ctx.db
       .query('snapshotProfiles')
-      .withIndex('by_slug', (q) => q.eq('slug', args.slug))
+      .withIndex('by_slug', (q) => q.eq('slug', nextSlug))
       .unique()
 
     if (existing) {
@@ -658,7 +948,7 @@ export const createSnapshotProfile = mutation({
     }
 
     return await ctx.db.insert('snapshotProfiles', {
-      slug: args.slug,
+      slug: nextSlug,
       name: args.name,
       description: args.description,
       isActive: args.isActive ?? true,
@@ -668,11 +958,278 @@ export const createSnapshotProfile = mutation({
   },
 })
 
-export const listSnapshotProfiles = query({
-  args: {},
+export const archiveSnapshotProfile = mutation({
+  args: {
+    profileSlug: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug)
+    await ctx.db.patch(profile._id, {
+      archivedAt: Date.now(),
+      isActive: false,
+      updatedAt: Date.now(),
+    })
+    return null
+  },
+})
+
+export const updateSnapshotProfile = mutation({
+  args: {
+    currentSlug: v.string(),
+    slug: v.optional(v.string()),
+    name: v.optional(v.string()),
+    description: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+  },
+  returns: v.id('snapshotProfiles'),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.currentSlug)
+    const nextSlug = args.slug ?? profile.slug
+    if (nextSlug !== profile.slug) {
+      const existing = await ctx.db
+        .query('snapshotProfiles')
+        .withIndex('by_slug', (q) => q.eq('slug', nextSlug))
+        .unique()
+      if (existing && existing._id !== profile._id) {
+        throw new Error(`Esiste gia' un profilo con slug '${nextSlug}'`)
+      }
+    }
+
+    await ctx.db.patch(profile._id, {
+      slug: nextSlug,
+      name: args.name ?? profile.name,
+      description: args.description ?? profile.description,
+      isActive: args.isActive ?? profile.isActive,
+      version: profile.version + 1,
+      updatedAt: Date.now(),
+    })
+    return profile._id
+  },
+})
+
+export const listProfileMembers = query({
+  args: {
+    profileSlug: v.string(),
+  },
   returns: v.array(v.any()),
-  handler: async (ctx) => {
-    return await ctx.db.query('snapshotProfiles').collect()
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug)
+    const rows = await ctx.db
+      .query('profileMembers')
+      .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
+      .collect()
+    return rows.filter((row) => row.isActive)
+  },
+})
+
+export const upsertProfileMember = mutation({
+  args: {
+    profileSlug: v.string(),
+    memberKey: v.string(),
+    assignedBy: v.optional(v.string()),
+    isActive: v.optional(v.boolean()),
+  },
+  returns: v.id('profileMembers'),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug)
+    const now = Date.now()
+    const existing = await ctx.db
+      .query('profileMembers')
+      .withIndex('by_profile_and_member_key', (q) =>
+        q.eq('profileId', profile._id).eq('memberKey', args.memberKey)
+      )
+      .unique()
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        assignedBy: args.assignedBy,
+        isActive: args.isActive ?? true,
+        updatedAt: now,
+      })
+      return existing._id
+    }
+
+    return await ctx.db.insert('profileMembers', {
+      profileId: profile._id,
+      memberKey: args.memberKey,
+      assignedBy: args.assignedBy,
+      isActive: args.isActive ?? true,
+      createdAt: now,
+      updatedAt: now,
+    })
+  },
+})
+
+export const removeProfileMember = mutation({
+  args: {
+    profileSlug: v.string(),
+    memberKey: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug)
+    const existing = await ctx.db
+      .query('profileMembers')
+      .withIndex('by_profile_and_member_key', (q) =>
+        q.eq('profileId', profile._id).eq('memberKey', args.memberKey)
+      )
+      .unique()
+    if (!existing) {
+      return null
+    }
+    await ctx.db.patch(existing._id, {
+      isActive: false,
+      updatedAt: Date.now(),
+    })
+    return null
+  },
+})
+
+export const listDataSourceSettings = query({
+  args: {
+    includeArchived: v.optional(v.boolean()),
+  },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db.query('dataSourceSettings').collect()
+    return rows
+      .filter((row) => args.includeArchived ? true : !row.archivedAt)
+      .sort((left, right) => left.label.localeCompare(right.label))
+  },
+})
+
+export const upsertDataSourceSetting = mutation({
+  args: {
+    entityType: v.string(),
+    label: v.string(),
+    adapterKey: v.optional(v.string()),
+    sourceKind: sourceKindValidator,
+    databaseKey: v.optional(v.string()),
+    tableName: v.optional(v.string()),
+    tableKey: v.optional(v.string()),
+    tableLabel: v.optional(v.string()),
+    schemaImportId: v.optional(v.id('schemaImports')),
+    allowedScopes: v.array(catalogOptionValidator),
+    allowedRowKeyStrategies: v.array(catalogOptionValidator),
+    idFieldSuggestions: v.optional(v.array(catalogOptionValidator)),
+    indexSuggestions: v.optional(v.array(schemaIndexValidator)),
+    defaultScopeKey: v.optional(v.string()),
+    defaultRowKeyStrategy: v.optional(v.string()),
+    defaultDateFieldKey: v.optional(v.string()),
+    defaultSelectedFieldKeys: v.array(v.string()),
+    fieldCatalog: v.array(fieldCatalogItemValidator),
+    metadata: v.optional(v.any()),
+    isActive: v.optional(v.boolean()),
+  },
+  returns: v.id('dataSourceSettings'),
+  handler: async (ctx, args) => {
+    validateDataSourceSettingInput(args)
+
+    const now = Date.now()
+    const entityType = args.entityType.trim()
+    const databaseKey = args.databaseKey?.trim() || 'app'
+    const tableName = args.tableName?.trim() || entityType
+    const tableKey = args.tableKey?.trim() || entityType
+    const tableLabel = args.tableLabel?.trim() || args.label.trim()
+    const existing = await ctx.db
+      .query('dataSourceSettings')
+      .withIndex('by_entity_type', (q) => q.eq('entityType', entityType))
+      .unique()
+
+    const normalizedAllowedScopes = normalizeCatalogOptions(args.allowedScopes)
+    const normalizedAllowedRowKeyStrategies = normalizeCatalogOptions(args.allowedRowKeyStrategies)
+    const normalizedIdFieldSuggestions = normalizeCatalogOptions(args.idFieldSuggestions ?? [])
+    const normalizedFieldCatalog = normalizeFieldCatalog(args.fieldCatalog)
+    const defaultScopeKey = args.defaultScopeKey ?? normalizedAllowedScopes[0]?.key
+    const defaultRowKeyStrategy = args.defaultRowKeyStrategy ?? normalizedAllowedRowKeyStrategies[0]?.key
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        label: args.label.trim(),
+        adapterKey: args.adapterKey?.trim() || undefined,
+        sourceKind: args.sourceKind,
+        databaseKey,
+        tableName,
+        tableKey,
+        tableLabel,
+        schemaImportId: args.schemaImportId,
+        allowedScopes: normalizedAllowedScopes,
+        allowedRowKeyStrategies: normalizedAllowedRowKeyStrategies,
+        idFieldSuggestions: normalizedIdFieldSuggestions,
+        indexSuggestions: args.indexSuggestions ?? [],
+        defaultScopeKey,
+        defaultRowKeyStrategy,
+        defaultDateFieldKey: args.defaultDateFieldKey,
+        defaultSelectedFieldKeys: args.defaultSelectedFieldKeys,
+        fieldCatalog: normalizedFieldCatalog,
+        metadata: args.metadata,
+        isActive: args.isActive ?? existing.isActive,
+        archivedAt: undefined,
+        updatedAt: now,
+      })
+      return existing._id
+    }
+
+    return await ctx.db.insert('dataSourceSettings', {
+      entityType,
+      label: args.label.trim(),
+      adapterKey: args.adapterKey?.trim() || undefined,
+      sourceKind: args.sourceKind,
+      databaseKey,
+      tableName,
+      tableKey,
+      tableLabel,
+      schemaImportId: args.schemaImportId,
+      allowedScopes: normalizedAllowedScopes,
+      allowedRowKeyStrategies: normalizedAllowedRowKeyStrategies,
+      idFieldSuggestions: normalizedIdFieldSuggestions,
+      indexSuggestions: args.indexSuggestions ?? [],
+      defaultScopeKey,
+      defaultRowKeyStrategy,
+      defaultDateFieldKey: args.defaultDateFieldKey,
+      defaultSelectedFieldKeys: args.defaultSelectedFieldKeys,
+      fieldCatalog: normalizedFieldCatalog,
+      metadata: args.metadata,
+      isActive: args.isActive ?? true,
+      createdAt: now,
+      updatedAt: now,
+    })
+  },
+})
+
+export const archiveDataSourceSetting = mutation({
+  args: {
+    entityType: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query('dataSourceSettings')
+      .withIndex('by_entity_type', (q) => q.eq('entityType', args.entityType))
+      .unique()
+    if (!existing) {
+      return null
+    }
+    await ctx.db.patch(existing._id, {
+      archivedAt: Date.now(),
+      isActive: false,
+      updatedAt: Date.now(),
+    })
+    return null
+  },
+})
+
+export const listSnapshotProfiles = query({
+  args: {
+    includeArchived: v.optional(v.boolean()),
+  },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db.query('snapshotProfiles').collect()
+    return rows
+      .filter((row) => args.includeArchived ? true : !row.archivedAt)
+      .sort((left, right) => left.name.localeCompare(right.name))
   },
 })
 
@@ -693,12 +1250,12 @@ export const listDataSources = query({
 
 export const upsertDataSource = mutation({
   args: {
-    profileSlug: v.string(),
+    profileSlug: v.optional(v.string()),
     sourceKey: v.string(),
     label: v.string(),
     adapterKey: v.optional(v.string()),
-    sourceKind: sourceKindValidator,
-    entityType: v.optional(v.string()),
+    sourceKind: v.optional(sourceKindValidator),
+    entityType: v.string(),
     scopeDefinition: v.optional(v.any()),
     selectedFieldKeys: v.optional(v.array(v.string())),
     dateFieldKey: v.optional(v.string()),
@@ -710,52 +1267,87 @@ export const upsertDataSource = mutation({
   },
   returns: v.id('dataSources'),
   handler: async (ctx, args) => {
-    const profile = await getProfileBySlug(ctx, args.profileSlug)
     const now = Date.now()
+    const dataSourceSetting = await getDataSourceSettingByEntityType(ctx, args.entityType)
+    if (!dataSourceSetting || !dataSourceSetting.isActive) {
+      throw new Error(`Catalogo data source non trovato o inattivo per '${args.entityType}'`)
+    }
     const existing = await ctx.db
       .query('dataSources')
-      .withIndex('by_profile_and_source_key', (q) =>
-        q.eq('profileId', profile._id).eq('sourceKey', args.sourceKey)
-      )
+      .withIndex('by_source_key', (q) => q.eq('sourceKey', args.sourceKey))
       .unique()
 
+    const nextScopeKind = args.scopeDefinition?.kind
+      ?? existing?.scopeDefinition?.kind
+      ?? dataSourceSetting.defaultScopeKey
+    const nextSelectedFieldKeys = args.selectedFieldKeys
+      ?? existing?.selectedFieldKeys
+      ?? dataSourceSetting.defaultSelectedFieldKeys
+    const nextDateFieldKey = args.dateFieldKey
+      ?? existing?.dateFieldKey
+      ?? dataSourceSetting.defaultDateFieldKey
+    const nextRowKeyStrategy = args.rowKeyStrategy
+      ?? existing?.rowKeyStrategy
+      ?? dataSourceSetting.defaultRowKeyStrategy
+
+    if (!nextScopeKind) {
+      throw new Error(`Scope di default mancante per '${args.entityType}'`)
+    }
+
+    validateDataSourceSelection({
+      entityType: args.entityType,
+      scopeKind: nextScopeKind,
+      selectedFieldKeys: nextSelectedFieldKeys,
+      dateFieldKey: nextDateFieldKey,
+      rowKeyStrategy: nextRowKeyStrategy,
+      dataSourceSetting,
+    })
+
+    const nextPatch = {
+      label: args.label,
+      adapterKey: dataSourceSetting.adapterKey ?? args.adapterKey,
+      sourceKind: 'materialized_rows' as const,
+      entityType: args.entityType,
+      databaseKey: dataSourceSetting.databaseKey,
+      tableName: dataSourceSetting.tableName,
+      tableKey: dataSourceSetting.tableKey,
+      scopeDefinition: { kind: nextScopeKind },
+      selectedFieldKeys: nextSelectedFieldKeys,
+      dateFieldKey: nextDateFieldKey,
+      rowKeyStrategy: nextRowKeyStrategy,
+      schedulePreset: args.schedulePreset ?? existing?.schedulePreset ?? 'manual',
+      fieldCatalog: dataSourceSetting.fieldCatalog,
+      metadata: args.metadata,
+      enabled: args.enabled ?? existing?.enabled ?? true,
+      updatedAt: now,
+    }
+
     if (existing) {
-      await ctx.db.patch(existing._id, {
-        label: args.label,
-        adapterKey: args.adapterKey,
-        sourceKind: args.sourceKind,
-        entityType: args.entityType,
-        scopeDefinition: args.scopeDefinition,
-        selectedFieldKeys: args.selectedFieldKeys ?? existing.selectedFieldKeys,
-        dateFieldKey: args.dateFieldKey,
-        rowKeyStrategy: args.rowKeyStrategy,
-        schedulePreset: args.schedulePreset ?? existing.schedulePreset,
-        fieldCatalog: args.fieldCatalog,
-        metadata: args.metadata,
-        enabled: args.enabled ?? existing.enabled,
-        updatedAt: now,
-      })
+      await ctx.db.patch(existing._id, nextPatch)
       return existing._id
     }
 
     return await ctx.db.insert('dataSources', {
-      profileId: profile._id,
       sourceKey: args.sourceKey,
-      label: args.label,
-      adapterKey: args.adapterKey,
-      sourceKind: args.sourceKind,
-      entityType: args.entityType,
-      scopeDefinition: args.scopeDefinition,
-      selectedFieldKeys: args.selectedFieldKeys ?? [],
-      dateFieldKey: args.dateFieldKey,
-      rowKeyStrategy: args.rowKeyStrategy,
-      schedulePreset: args.schedulePreset ?? 'manual',
-      fieldCatalog: args.fieldCatalog,
-      metadata: args.metadata,
-      enabled: args.enabled ?? true,
+      label: nextPatch.label,
+      adapterKey: nextPatch.adapterKey,
+      sourceKind: nextPatch.sourceKind,
+      entityType: nextPatch.entityType,
+      databaseKey: nextPatch.databaseKey,
+      tableName: nextPatch.tableName,
+      tableKey: nextPatch.tableKey,
+      scopeDefinition: nextPatch.scopeDefinition,
+      selectedFieldKeys: nextPatch.selectedFieldKeys,
+      dateFieldKey: nextPatch.dateFieldKey,
+      rowKeyStrategy: nextPatch.rowKeyStrategy,
+      schedulePreset: nextPatch.schedulePreset,
+      fieldCatalog: nextPatch.fieldCatalog,
+      metadata: nextPatch.metadata,
+      enabled: nextPatch.enabled,
       status: 'idle',
       materializedCount: 0,
       createdAt: now,
+      updatedAt: now,
     })
   },
 })
@@ -844,11 +1436,11 @@ export const getDataSourceFilterOptions = query({
         if (fieldMeta && fieldMeta.filterable === false) {
           return null
         }
-        const rawOptions = rows
+        const rawOptions: string[] = rows
           .map((row: { rowData: Record<string, unknown> }) => row.rowData[fieldKey])
           .filter((value: unknown): value is string | number | boolean => value != null && typeof value !== 'object')
           .map((value: string | number | boolean) => String(value))
-        const options = (Array.from(new Set(rawOptions)) as string[])
+        const options = Array.from(new Set(rawOptions))
           .sort((left: string, right: string) => left.localeCompare(right))
           .slice(0, 200)
 
@@ -865,6 +1457,7 @@ export const getDataSourceFilterOptions = query({
 
 export const requestExport = mutation({
   args: {
+    profileSlug: v.optional(v.string()),
     requestedBy: v.optional(v.string()),
     name: v.optional(v.string()),
     dataSourceKey: v.string(),
@@ -873,6 +1466,9 @@ export const requestExport = mutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
+    const profile = args.profileSlug
+      ? await getProfileBySlug(ctx, args.profileSlug)
+      : null
     const dataSource = await getDataSourceByKey(ctx, args.dataSourceKey)
     if (!dataSource || !dataSource.enabled) {
       throw new Error('Data source non disponibile')
@@ -892,6 +1488,7 @@ export const requestExport = mutation({
       args.filters
     )
     const exportId = await createCompletedExport(ctx, {
+      profileId: profile?._id,
       requestedBy: args.requestedBy,
       name: args.name,
       dataSource,
@@ -937,6 +1534,7 @@ export const regenerateExport = mutation({
     )
 
     const newExportId = await createCompletedExport(ctx, {
+      profileId: exportRow.profileId,
       requestedBy: args.requestedBy ?? exportRow.requestedBy,
       name: args.name ?? exportRow.name,
       dataSource,
@@ -953,6 +1551,8 @@ export const regenerateExport = mutation({
 
 export const listExports = query({
   args: {
+    profileSlug: v.optional(v.string()),
+    includeGlobal: v.optional(v.boolean()),
     requestedBy: v.optional(v.string()),
     includePinned: v.optional(v.boolean()),
     limit: v.optional(v.number()),
@@ -961,9 +1561,21 @@ export const listExports = query({
   handler: async (ctx, args) => {
     const limit = Math.max(1, Math.min(args.limit ?? 50, 200))
     const rows = await ctx.db.query('analyticsExports').order('desc').take(limit * 3)
+    const profile = args.profileSlug
+      ? await getProfileBySlug(ctx, args.profileSlug)
+      : null
     return rows
       .filter((row) => args.includePinned ? true : !row.pinnedByAudit)
       .filter((row) => args.requestedBy ? row.requestedBy === args.requestedBy : true)
+      .filter((row) => {
+        if (!profile) {
+          return true
+        }
+        if (row.profileId === profile._id) {
+          return true
+        }
+        return args.includeGlobal === false ? false : row.exportScope === 'global'
+      })
       .slice(0, limit)
   },
 })
@@ -1178,7 +1790,7 @@ export const upsertCalculationDefinition = mutation({
     sourceKey: v.string(),
     operation: operationValidator,
     fieldPath: v.optional(v.string()),
-    filters: v.optional(v.any()),
+    filters: calculationFiltersValidator,
     groupBy: v.optional(v.array(v.string())),
     normalization: v.optional(v.any()),
     priority: v.optional(v.number()),
@@ -1192,12 +1804,7 @@ export const upsertCalculationDefinition = mutation({
     if (!indicator) {
       throw new Error(`Indicatore '${args.indicatorSlug}' non trovato`)
     }
-    const dataSource = await ctx.db
-      .query('dataSources')
-      .withIndex('by_profile_and_source_key', (q) =>
-        q.eq('profileId', profile._id).eq('sourceKey', args.sourceKey)
-      )
-      .unique()
+    const dataSource = await getDataSourceByKey(ctx, args.sourceKey)
     if (!dataSource) {
       throw new Error(`Data source '${args.sourceKey}' non trovata`)
     }
@@ -1214,10 +1821,11 @@ export const upsertCalculationDefinition = mutation({
       definition.fieldPath === args.fieldPath
     ))
     const now = Date.now()
+    const normalizedFilters = normalizeCalculationFilters(args.filters)
 
     if (existing) {
       await ctx.db.patch(existing._id, {
-        filters: args.filters,
+        filters: normalizedFilters,
         groupBy: args.groupBy,
         normalization: args.normalization,
         priority: args.priority ?? existing.priority,
@@ -1234,7 +1842,7 @@ export const upsertCalculationDefinition = mutation({
       dataSourceId: dataSource._id,
       operation: args.operation,
       fieldPath: args.fieldPath,
-      filters: args.filters,
+      filters: normalizedFilters,
       groupBy: args.groupBy,
       normalization: args.normalization,
       priority: args.priority ?? 100,
@@ -1269,7 +1877,7 @@ export const replaceProfileDefinitions = mutation({
         sourceKey: v.string(),
         operation: operationValidator,
         fieldPath: v.optional(v.string()),
-        filters: v.optional(v.any()),
+        filters: calculationFiltersValidator,
         groupBy: v.optional(v.array(v.string())),
         normalization: v.optional(v.any()),
         priority: v.optional(v.number()),
@@ -1299,22 +1907,18 @@ export const replaceProfileDefinitions = mutation({
       if (!indicator) {
         throw new Error(`Indicatore '${definition.indicatorSlug}' non trovato`)
       }
-      const dataSource = await ctx.db
-        .query('dataSources')
-        .withIndex('by_profile_and_source_key', (q) =>
-          q.eq('profileId', profile._id).eq('sourceKey', definition.sourceKey)
-        )
-        .unique()
+      const dataSource = await getDataSourceByKey(ctx, definition.sourceKey)
       if (!dataSource) {
         throw new Error(`Data source '${definition.sourceKey}' non trovata`)
       }
+      const normalizedFilters = normalizeCalculationFilters(definition.filters)
       await ctx.db.insert('calculationDefinitions', {
         profileId: profile._id,
         indicatorId: indicator._id,
         dataSourceId: dataSource._id,
         operation: definition.operation,
         fieldPath: definition.fieldPath,
-        filters: definition.filters,
+        filters: normalizedFilters,
         groupBy: definition.groupBy,
         normalization: definition.normalization,
         priority: definition.priority ?? 100,
@@ -1418,12 +2022,13 @@ export const listProfileDefinitions = query({
   returns: v.any(),
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug)
-    const [indicators, dataSources, definitions, derivedIndicators] = await Promise.all([
+    const [indicators, allDataSources, definitions, derivedIndicators] = await Promise.all([
       ctx.db.query('indicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
-      ctx.db.query('dataSources').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
+      ctx.db.query('dataSources').collect(),
       ctx.db.query('calculationDefinitions').withIndex('by_profile_and_priority', (q) => q.eq('profileId', profile._id)).collect(),
       ctx.db.query('derivedIndicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
     ])
+    const dataSources = allDataSources.filter((row) => !row.archivedAt)
 
     const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]))
     const dataSourcesById = new Map(dataSources.map((dataSource) => [dataSource._id, dataSource]))
@@ -1448,12 +2053,9 @@ export const listProfileDataSources = query({
   },
   returns: v.array(v.any()),
   handler: async (ctx, args) => {
-    const profile = await getProfileBySlug(ctx, args.profileSlug)
-    return await ctx.db
-      .query('dataSources')
-      .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
-      .collect()
-      .then((rows) => rows.filter((row) => !row.archivedAt))
+    await getProfileBySlug(ctx, args.profileSlug)
+    const rows = await ctx.db.query('dataSources').collect()
+    return rows.filter((row) => !row.archivedAt)
   },
 })
 
@@ -1484,11 +2086,12 @@ export const simulateSnapshot = query({
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug)
     const snapshotAt = args.snapshotAt ?? Date.now()
-    const [definitions, indicators, dataSources] = await Promise.all([
+    const [definitions, indicators, allDataSources] = await Promise.all([
       ctx.db.query('calculationDefinitions').withIndex('by_profile_and_priority', (q) => q.eq('profileId', profile._id)).collect(),
       ctx.db.query('indicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
-      ctx.db.query('dataSources').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
+      ctx.db.query('dataSources').collect(),
     ])
+    const dataSources = allDataSources.filter((row) => !row.archivedAt)
 
     const enabledDefinitions = definitions.filter((definition) => definition.enabled)
     const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]))
@@ -1522,7 +2125,7 @@ export const simulateSnapshot = query({
 
     return enabledDefinitions.map((definition) => {
       const rows = rowsByDataSource.get(definition.dataSourceId) ?? []
-      const result = runSingleDefinition(definition, rows)
+      const result = runSingleDefinition(definition, rows, snapshotAt)
       return {
         definitionId: definition._id,
         indicatorId: definition.indicatorId,
@@ -1564,12 +2167,13 @@ export const createSnapshotRun = mutation({
     const snapshotAt = args.snapshotAt ?? Date.now()
     const now = Date.now()
 
-    const [definitions, indicators, dataSources, derivedIndicators] = await Promise.all([
+    const [definitions, indicators, allDataSources, derivedIndicators] = await Promise.all([
       ctx.db.query('calculationDefinitions').withIndex('by_profile_and_priority', (q) => q.eq('profileId', profile._id)).collect(),
       ctx.db.query('indicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
-      ctx.db.query('dataSources').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
+      ctx.db.query('dataSources').collect(),
       ctx.db.query('derivedIndicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
     ])
+    const dataSources = allDataSources.filter((row) => !row.archivedAt)
 
     const enabledDefinitions = definitions.filter((definition) => definition.enabled)
     const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]))
@@ -1632,7 +2236,7 @@ export const createSnapshotRun = mutation({
       const dataSourceRows = materializedRowsByDataSource.get(definition.dataSourceId) ?? []
 
       try {
-        const result = runSingleDefinition(definition, dataSourceRows)
+        const result = runSingleDefinition(definition, dataSourceRows, snapshotAt)
         const durationMs = Date.now() - startedAt
         const ruleHash = buildRuleHash(definition)
         const indicator = indicatorsById.get(definition.indicatorId)
@@ -1702,7 +2306,7 @@ export const createSnapshotRun = mutation({
             dataSourceId: definition.dataSourceId,
             sourceKey: dataSource?.sourceKey ?? null,
           },
-          resolvedFilters: definition.filters,
+          resolvedFilters: result.resolvedFilters,
           sampleRowsPreview: result.filteredRows.slice(0, 10),
           warnings: result.warningMessage ? [result.warningMessage] : undefined,
           createdAt: Date.now(),

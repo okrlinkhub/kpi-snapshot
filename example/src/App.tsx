@@ -5,6 +5,7 @@ import { api } from "../convex/_generated/api";
 type RuleOperation = "sum" | "count" | "avg" | "min" | "max" | "distinct_count";
 type FilterOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
 type FilterValueType = "string" | "number" | "boolean" | "null" | "json" | "csv";
+type CalculationTimeRangeKind = "last_month" | "last_3_months" | "month_to_date" | "year_to_date";
 type AdminTab = "setup" | "rules" | "snapshots" | "data";
 
 type FilterDraft = {
@@ -22,7 +23,10 @@ type RuleDefinition = {
   sourceKey: string | null;
   operation: RuleOperation;
   fieldPath?: string;
-  filters?: unknown;
+  filters: {
+    fieldRules: Array<{ field: string; op: FilterOperator; value: unknown }>;
+    timeRange?: { kind: CalculationTimeRangeKind };
+  };
   groupBy?: Array<string>;
   normalization?: unknown;
   priority: number;
@@ -62,6 +66,13 @@ const filterOpLabels: Record<FilterOperator, string> = {
   in: "in (appartiene a lista)",
 };
 
+const timeRangeLabels: Record<CalculationTimeRangeKind, string> = {
+  last_month: "Ultimo mese",
+  last_3_months: "Ultimi 3 mesi",
+  month_to_date: "Month to date",
+  year_to_date: "Year to date",
+};
+
 function uid(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -89,9 +100,9 @@ function normalizeFilterValueToDraft(value: unknown): Pick<FilterDraft, "valueTy
   return { valueType: "string", valueText: String(value ?? ""), valueBoolean: false };
 }
 
-function parseFiltersForEdit(filters: unknown): Array<FilterDraft> {
-  if (!Array.isArray(filters)) return [];
-  return filters
+function parseFiltersForEdit(filters: RuleDefinition["filters"] | undefined): Array<FilterDraft> {
+  if (!filters?.fieldRules?.length) return [];
+  return filters.fieldRules
     .filter((item): item is { field?: unknown; op?: unknown; value?: unknown } => typeof item === "object" && item !== null)
     .map((item) => {
       const op = filterOps.includes(item.op as FilterOperator) ? (item.op as FilterOperator) : "eq";
@@ -105,9 +116,11 @@ function parseFiltersForEdit(filters: unknown): Array<FilterDraft> {
     });
 }
 
-function summarizeFilters(filters: unknown): string {
-  if (!Array.isArray(filters) || filters.length === 0) return "Nessun filtro";
-  return filters
+function summarizeFilters(filters: RuleDefinition["filters"] | undefined): string {
+  const fieldRules = filters?.fieldRules ?? [];
+  const fieldRulesSummary = fieldRules.length === 0
+    ? "nessun filtro campo"
+    : fieldRules
     .map((item) => {
       if (typeof item !== "object" || item === null) return "Filtro non valido";
       const field = "field" in item ? String((item as { field: unknown }).field) : "?";
@@ -116,6 +129,8 @@ function summarizeFilters(filters: unknown): string {
       return `${field} ${op} ${value}`;
     })
     .join(" AND ");
+  const timeRangeSummary = filters?.timeRange ? timeRangeLabels[filters.timeRange.kind] : "nessun periodo";
+  return `${fieldRulesSummary} · ${timeRangeSummary}`;
 }
 
 function buildMonthAssignedPreset(): Array<FilterDraft> {
@@ -149,6 +164,7 @@ export default function App() {
   const [newEnabled, setNewEnabled] = useState(true);
   const [newGroupBy, setNewGroupBy] = useState("");
   const [ruleFilters, setRuleFilters] = useState<Array<FilterDraft>>([]);
+  const [timeRangeKind, setTimeRangeKind] = useState<CalculationTimeRangeKind | "">("");
   const [editingDefinitionId, setEditingDefinitionId] = useState<string | null>(null);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>("");
   const [snapshotNote, setSnapshotNote] = useState("manual snapshot from example admin page");
@@ -184,8 +200,9 @@ export default function App() {
       ruleFilters.length === 0
         ? "nessun filtro"
         : ruleFilters.map((f) => `${f.field || "?"} ${f.op} ${f.valueType}`).join(" AND ");
-    return `${newOperation}(${newFieldPath.trim() || "root"}) | priority=${newPriority} | ${filtersSummary}`;
-  }, [newFieldPath, newOperation, newPriority, ruleFilters]);
+    const timeRangeSummary = timeRangeKind ? timeRangeLabels[timeRangeKind] : "nessun periodo";
+    return `${newOperation}(${newFieldPath.trim() || "root"}) | priority=${newPriority} | ${filtersSummary} | ${timeRangeSummary}`;
+  }, [newFieldPath, newOperation, newPriority, ruleFilters, timeRangeKind]);
 
   const resetRuleEditor = () => {
     setEditingDefinitionId(null);
@@ -197,6 +214,7 @@ export default function App() {
     setNewEnabled(true);
     setNewGroupBy("");
     setRuleFilters([]);
+    setTimeRangeKind("");
   };
 
   const addFilterDraft = () => {
@@ -227,6 +245,7 @@ export default function App() {
     setNewOperation("count");
     setNewFieldPath("");
     setRuleFilters([]);
+    setTimeRangeKind("");
     setNewPriority(100);
     setNewEnabled(true);
   };
@@ -246,6 +265,7 @@ export default function App() {
         valueBoolean: false,
       },
     ]);
+    setTimeRangeKind("");
     setNewPriority(110);
     setNewEnabled(true);
   };
@@ -265,6 +285,7 @@ export default function App() {
         valueBoolean: false,
       },
     ]);
+    setTimeRangeKind("");
     setNewPriority(120);
     setNewEnabled(true);
   };
@@ -275,6 +296,7 @@ export default function App() {
     setNewOperation("count");
     setNewFieldPath("");
     setRuleFilters(buildMonthAssignedPreset());
+    setTimeRangeKind("");
     setNewPriority(130);
     setNewEnabled(true);
   };
@@ -302,6 +324,10 @@ export default function App() {
           op: f.op,
           value: toFilterValue(f),
         }));
+      const nextFilters = {
+        fieldRules: parsedFilters,
+        timeRange: timeRangeKind ? { kind: timeRangeKind } : undefined,
+      };
 
       const parsedGroupBy = newGroupBy
         .split(",")
@@ -315,7 +341,7 @@ export default function App() {
           sourceKey: sourceKey.trim(),
           operation: newOperation,
           fieldPath: newFieldPath.trim() || undefined,
-          filters: parsedFilters.length > 0 ? parsedFilters : undefined,
+          filters: nextFilters,
           groupBy: parsedGroupBy.length > 0 ? parsedGroupBy : undefined,
           priority: newPriority,
           enabled: newEnabled,
@@ -342,7 +368,7 @@ export default function App() {
             sourceKey: sourceKey.trim(),
             operation: newOperation,
             fieldPath: newFieldPath.trim() || undefined,
-            filters: parsedFilters.length > 0 ? parsedFilters : undefined,
+            filters: nextFilters,
             groupBy: parsedGroupBy.length > 0 ? parsedGroupBy : undefined,
             priority: newPriority,
             enabled: newEnabled,
@@ -375,6 +401,7 @@ export default function App() {
     setNewEnabled(definition.enabled);
     setNewGroupBy(Array.isArray(definition.groupBy) ? definition.groupBy.join(", ") : "");
     setRuleFilters(parseFiltersForEdit(definition.filters));
+    setTimeRangeKind(definition.filters?.timeRange?.kind ?? "");
     setActiveTab("rules");
   };
 
@@ -587,6 +614,21 @@ export default function App() {
             </div>
 
             <div className="space-y-3 rounded border border-slate-200 p-3">
+              <div className="grid md:grid-cols-2 gap-3">
+                <label className="space-y-1">
+                  <span className="text-sm font-semibold">Periodo rolling</span>
+                  <select
+                    value={timeRangeKind}
+                    onChange={(e) => setTimeRangeKind(e.target.value as CalculationTimeRangeKind | "")}
+                    className="w-full px-2 py-2 rounded border border-slate-300 bg-transparent"
+                  >
+                    <option value="">Nessun periodo</option>
+                    {Object.entries(timeRangeLabels).map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-semibold">Filtri</h3>
                 <div className="flex gap-2">
