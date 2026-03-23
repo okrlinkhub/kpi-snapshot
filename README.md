@@ -29,7 +29,7 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 
 ## Cosa fa il package e cosa resta all'app host
 
-`kpi-snapshot` 2.x si occupa di:
+`kpi-snapshot` 1.x si occupa di:
 
 - definizione dei profili e delle regole di calcolo;
 - possesso di una sola tabella `dataSources`, globale e riusabile da tutti i profili;

@@ -6,7 +6,9 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-03-19
+## [1.0.0] - 2026-03-23
+
+### Breaking changes
 
 - Rimossa esplicitamente la tabella `sourceRows` dal componente.
 - `createSnapshot` e `simulateSnapshot` lavorano ora su `sourcePayloads` passati dall'app host.
