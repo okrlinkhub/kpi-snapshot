@@ -23,6 +23,34 @@ import type { FunctionReference } from "convex/server";
  */
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
+    exportWorkflows: {
+      regenerateExport: FunctionReference<
+        "action",
+        "internal",
+        { exportId: string; name?: string; requestedBy?: string },
+        string,
+        Name
+      >;
+      requestExport: FunctionReference<
+        "action",
+        "internal",
+        {
+          clonedFromExportId?: string;
+          dataSourceKey: string;
+          filters: {
+            dateFieldKey?: string;
+            endDate?: number;
+            fieldFilters?: Array<{ fieldKey: string; values: Array<string> }>;
+            startDate?: number;
+          };
+          name?: string;
+          profileSlug?: string;
+          requestedBy?: string;
+        },
+        string,
+        Name
+      >;
+    };
     externalSources: {
       addExternalSource: FunctionReference<
         "mutation",
@@ -82,7 +110,360 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
     };
+    materialization: {
+      appendMaterializationRowsBatch: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          jobId: string;
+          offset: number;
+          rows: Array<{
+            occurredAt: number;
+            rowData: any;
+            rowKey: string;
+            sourceEntityType?: string;
+            sourceRecordId?: string;
+          }>;
+        },
+        { stagedCount: number },
+        Name
+      >;
+      completeMaterializationJob: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          frozenExportId?: string;
+          jobId: string;
+          snapshotId?: string;
+          snapshotRunId?: string;
+        },
+        { rowCount: number },
+        Name
+      >;
+      deleteDataSource: FunctionReference<
+        "mutation",
+        "internal",
+        { profileSlug?: string; sourceKey: string },
+        { deleted: boolean },
+        Name
+      >;
+      failMaterializationJob: FunctionReference<
+        "mutation",
+        "internal",
+        { errorMessage: string; jobId: string },
+        null,
+        Name
+      >;
+      getDataSourceByKey: FunctionReference<
+        "query",
+        "internal",
+        { sourceKey: string },
+        any | null,
+        Name
+      >;
+      insertMaterializationRowsBatch: FunctionReference<
+        "mutation",
+        "internal",
+        { batchSize?: number; jobId: string },
+        { hasMore: boolean; insertedCount: number },
+        Name
+      >;
+      purgeExistingMaterializedRowsBatch: FunctionReference<
+        "mutation",
+        "internal",
+        { batchSize?: number; jobId: string },
+        { deletedCount: number; hasMore: boolean },
+        Name
+      >;
+      startMaterializationJob: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          requestedBy?: string;
+          sourceKey: string;
+          triggerKind: "manual" | "schedule" | "upsert" | "snapshot";
+        },
+        { jobId: string; sourceKey: string },
+        Name
+      >;
+    };
+    materializationReader: {
+      listMaterializableRows: FunctionReference<
+        "query",
+        "internal",
+        {
+          dateFieldKey?: string;
+          indexKey?: string;
+          scopeKind: "all" | "last_3_months";
+          tableName: string;
+        },
+        Array<any>,
+        Name
+      >;
+    };
+    reportEngine: {
+      addReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          indicatorKind: "base" | "derived";
+          indicatorLabel: string;
+          indicatorSlug: string;
+          indicatorUnit?: string;
+          reportId: string;
+        },
+        string,
+        Name
+      >;
+      archiveReport: FunctionReference<
+        "mutation",
+        "internal",
+        { reportId: string; updatedByKey?: string },
+        null,
+        Name
+      >;
+      createReport: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          createdByKey?: string;
+          description?: string;
+          name: string;
+          profileSlug: string;
+          slug?: string;
+        },
+        { reportId: string; slug: string },
+        Name
+      >;
+      getReport: FunctionReference<
+        "query",
+        "internal",
+        { reportId: string },
+        {
+          report: {
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            createdByKey?: string;
+            description?: string;
+            isArchived: boolean;
+            name: string;
+            profileId: string;
+            profileSlug: string;
+            slug: string;
+            updatedAt: number;
+            updatedByKey?: string;
+          };
+          widgets: Array<{
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            order: number;
+            reportId: string;
+            updatedAt?: number;
+          }>;
+        } | null,
+        Name
+      >;
+      getReportBySlug: FunctionReference<
+        "query",
+        "internal",
+        { slug: string },
+        {
+          report: {
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            createdByKey?: string;
+            description?: string;
+            isArchived: boolean;
+            name: string;
+            profileId: string;
+            profileSlug: string;
+            slug: string;
+            updatedAt: number;
+            updatedByKey?: string;
+          };
+          widgets: Array<{
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            order: number;
+            reportId: string;
+            updatedAt?: number;
+          }>;
+        } | null,
+        Name
+      >;
+      listReports: FunctionReference<
+        "query",
+        "internal",
+        { includeArchived?: boolean; profileSlug?: string },
+        Array<{
+          _creationTime: number;
+          _id: string;
+          createdAt: number;
+          createdByKey?: string;
+          description?: string;
+          isArchived: boolean;
+          name: string;
+          profileId: string;
+          profileSlug: string;
+          slug: string;
+          updatedAt: number;
+          updatedByKey?: string;
+        }>,
+        Name
+      >;
+      removeReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        { widgetId: string },
+        null,
+        Name
+      >;
+      reorderReportWidgets: FunctionReference<
+        "mutation",
+        "internal",
+        { reportId: string; widgetIds: Array<string> },
+        null,
+        Name
+      >;
+      updateReportMeta: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          description?: string;
+          isArchived?: boolean;
+          name?: string;
+          reportId: string;
+          slug?: string;
+          updatedByKey?: string;
+        },
+        { reportId: string; slug: string },
+        Name
+      >;
+    };
+    schemaRegistry: {
+      deleteSchemaImport: FunctionReference<
+        "mutation",
+        "internal",
+        { schemaImportId: string },
+        null,
+        Name
+      >;
+      listCatalogResetJobs: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<any>,
+        Name
+      >;
+      listSchemaImports: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Array<any>,
+        Name
+      >;
+      regenerateCatalogFromSchemas: FunctionReference<
+        "mutation",
+        "internal",
+        {},
+        { generatedSettingsCount: number; schemaImportCount: number },
+        Name
+      >;
+      regenerateSchemaCatalog: FunctionReference<
+        "mutation",
+        "internal",
+        {},
+        { generatedSettingsCount: number; schemaImportCount: number },
+        Name
+      >;
+      replaceSchemaImport: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          checksum: string;
+          databaseKey: string;
+          fileName: string;
+          schemaSource: string;
+          tables: Array<{
+            defaultDateFieldKey?: string;
+            defaultRowKeyFieldKey?: string;
+            fields: Array<{
+              filterable?: boolean;
+              isArray?: boolean;
+              isNullable?: boolean;
+              isSystem?: boolean;
+              key: string;
+              label: string;
+              referenceTable?: string;
+              sourcePath?: string;
+              sourceTable?: string;
+              valueType: string;
+            }>;
+            indexes: Array<{
+              fields: Array<string>;
+              key: string;
+              label: string;
+            }>;
+            label: string;
+            tableKey: string;
+            tableName: string;
+          }>;
+        },
+        { schemaImportId: string },
+        Name
+      >;
+      startCatalogReset: FunctionReference<
+        "mutation",
+        "internal",
+        { batchSize?: number; requestedBy?: string },
+        { jobId: string },
+        Name
+      >;
+    };
     snapshotEngine: {
+      archiveDataSourceSetting: FunctionReference<
+        "mutation",
+        "internal",
+        { entityType: string },
+        null,
+        Name
+      >;
+      archiveSnapshotProfile: FunctionReference<
+        "mutation",
+        "internal",
+        { profileSlug: string },
+        null,
+        Name
+      >;
+      attachSnapshotValueEvidence: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          uploads: Array<{
+            fileName: string;
+            mimeType: string;
+            rowCount: number;
+            sha256?: string;
+            snapshotRunItemId: string;
+            snapshotValueId: string;
+            storageId: string;
+          }>;
+        },
+        null,
+        Name
+      >;
       backfillIndicatorLabelSnapshot: FunctionReference<
         "mutation",
         "internal",
@@ -95,13 +476,30 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
-      createSnapshot: FunctionReference<
+      createSnapshotProfile: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          description?: string;
+          isActive?: boolean;
+          name: string;
+          slug?: string;
+        },
+        string,
+        Name
+      >;
+      createSnapshotRun: FunctionReference<
         "mutation",
         "internal",
         {
           note?: string;
           profileSlug: string;
           snapshotAt?: number;
+          triggerKind?:
+            | "manual"
+            | "source_materialization"
+            | "scheduled_materialization";
+          triggerSourceKey?: string;
           triggeredBy?: string;
         },
         {
@@ -113,44 +511,92 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
-      createSnapshotProfile: FunctionReference<
+      deleteDerivedIndicator: FunctionReference<
         "mutation",
         "internal",
-        {
-          description?: string;
-          isActive?: boolean;
-          name: string;
-          slug: string;
-        },
-        string,
+        { profileSlug: string; slug: string },
+        { deleted: boolean },
+        Name
+      >;
+      deleteExportPermanently: FunctionReference<
+        "mutation",
+        "internal",
+        { exportId: string },
+        null,
+        Name
+      >;
+      deleteIndicator: FunctionReference<
+        "mutation",
+        "internal",
+        { profileSlug: string; slug: string },
+        { deleted: boolean; deletedDefinitionCount: number },
+        Name
+      >;
+      getDataSourceFilterOptions: FunctionReference<
+        "query",
+        "internal",
+        { sourceKey: string },
+        Array<any>,
+        Name
+      >;
+      getDerivedIndicatorBySlug: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string; slug: string },
+        any | null,
+        Name
+      >;
+      getExportDownloadUrl: FunctionReference<
+        "query",
+        "internal",
+        { exportId: string },
+        string | null,
         Name
       >;
       getIndicatorByExternalId: FunctionReference<
         "query",
         "internal",
         { externalId: string },
-        any,
+        any | null,
         Name
       >;
       getIndicatorBySlug: FunctionReference<
         "query",
         "internal",
         { profileSlug: string; slug: string },
-        any,
+        any | null,
+        Name
+      >;
+      getIntegrationValueByExternalId: FunctionReference<
+        "query",
+        "internal",
+        { externalId: string },
+        any | null,
+        Name
+      >;
+      getLatestSnapshotValuesForProfile: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        {
+          snapshotAt: number | null;
+          snapshotId: string | null;
+          values: Array<any>;
+        },
         Name
       >;
       getSnapshotExplain: FunctionReference<
         "query",
         "internal",
         { snapshotId: string },
-        any,
+        any | null,
         Name
       >;
-      getValueByExternalId: FunctionReference<
+      getSnapshotValueEvidenceDownloadUrl: FunctionReference<
         "query",
         "internal",
-        { externalId: string },
-        any,
+        { snapshotValueId: string },
+        string | null,
         Name
       >;
       ingestSourceRows: FunctionReference<
@@ -164,6 +610,54 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { inserted: number },
         Name
       >;
+      listDataSources: FunctionReference<
+        "query",
+        "internal",
+        { includeDisabled?: boolean },
+        Array<any>,
+        Name
+      >;
+      listDataSourceSettings: FunctionReference<
+        "query",
+        "internal",
+        { includeArchived?: boolean },
+        Array<any>,
+        Name
+      >;
+      listDerivedIndicators: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        Array<any>,
+        Name
+      >;
+      listExports: FunctionReference<
+        "query",
+        "internal",
+        {
+          includeGlobal?: boolean;
+          includePinned?: boolean;
+          limit?: number;
+          profileSlug?: string;
+          requestedBy?: string;
+        },
+        Array<any>,
+        Name
+      >;
+      listIntegrationValuesForSync: FunctionReference<
+        "query",
+        "internal",
+        { limit?: number; profileSlug?: string },
+        Array<any>,
+        Name
+      >;
+      listProfileDataSources: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        Array<any>,
+        Name
+      >;
       listProfileDefinitions: FunctionReference<
         "query",
         "internal",
@@ -171,42 +665,83 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      listProfileMembers: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        Array<any>,
+        Name
+      >;
+      listProfileSlugsBySourceKey: FunctionReference<
+        "query",
+        "internal",
+        { sourceKey: string },
+        Array<string>,
+        Name
+      >;
+      listScheduledRefreshTargets: FunctionReference<
+        "query",
+        "internal",
+        { schedulePreset: "daily" | "weekly_monday" | "monthly_first_day" },
+        Array<any>,
+        Name
+      >;
       listSnapshotProfiles: FunctionReference<
         "query",
         "internal",
-        {},
-        Array<{
-          _creationTime: number;
-          _id: string;
-          createdAt: number;
-          description?: string;
-          isActive: boolean;
-          name: string;
-          slug: string;
-          updatedAt?: number;
-          version: number;
-        }>,
+        { includeArchived?: boolean },
+        Array<any>,
         Name
       >;
       listSnapshotRunErrors: FunctionReference<
         "query",
         "internal",
         { snapshotRunId: string },
-        any,
+        Array<any>,
         Name
       >;
       listSnapshots: FunctionReference<
         "query",
         "internal",
         { limit?: number; profileSlug?: string },
-        any,
+        Array<any>,
         Name
       >;
-      listValuesForSync: FunctionReference<
+      listSnapshotValues: FunctionReference<
         "query",
         "internal",
-        { limit?: number; profileSlug?: string },
-        any,
+        { snapshotId: string },
+        Array<any>,
+        Name
+      >;
+      regenerateExport: FunctionReference<
+        "mutation",
+        "internal",
+        { exportId: string; name?: string; requestedBy?: string },
+        string,
+        Name
+      >;
+      removeProfileMember: FunctionReference<
+        "mutation",
+        "internal",
+        { memberKey: string; profileSlug: string },
+        null,
+        Name
+      >;
+      replaceMaterializedRows: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          rows: Array<{
+            occurredAt: number;
+            rowData: any;
+            rowKey: string;
+            sourceEntityType?: string;
+            sourceRecordId?: string;
+          }>;
+          sourceKey: string;
+        },
+        { rowCount: number },
         Name
       >;
       replaceProfileDefinitions: FunctionReference<
@@ -216,7 +751,23 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           definitions: Array<{
             enabled?: boolean;
             fieldPath?: string;
-            filters?: any;
+            filters: {
+              fieldRuleTree?: any;
+              fieldRules: Array<{
+                field: string;
+                op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+                rightOperand:
+                  | { kind: "literal"; value: any }
+                  | { field: string; kind: "field" };
+              }>;
+              timeRange?: {
+                kind:
+                  | "last_month"
+                  | "last_3_months"
+                  | "month_to_date"
+                  | "year_to_date";
+              };
+            };
             groupBy?: Array<string>;
             indicatorSlug: string;
             normalization?: any;
@@ -236,6 +787,25 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         { created: number; deleted: number },
         Name
       >;
+      requestExport: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          clonedFromExportId?: string;
+          dataSourceKey: string;
+          filters: {
+            dateFieldKey?: string;
+            endDate?: number;
+            fieldFilters?: Array<{ fieldKey: string; values: Array<string> }>;
+            startDate?: number;
+          };
+          name?: string;
+          profileSlug?: string;
+          requestedBy?: string;
+        },
+        string,
+        Name
+      >;
       setIndicatorExternalId: FunctionReference<
         "mutation",
         "internal",
@@ -243,18 +813,25 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
-      setValueExternalId: FunctionReference<
+      setIntegrationValueExternalId: FunctionReference<
         "mutation",
         "internal",
-        { externalId: string; valueId: string },
+        { externalId: string; integrationValueId: string },
         null,
         Name
       >;
       simulateSnapshot: FunctionReference<
         "query",
         "internal",
-        { profileSlug: string; snapshotAt?: number },
-        any,
+        {
+          profileSlug: string;
+          snapshotAt?: number;
+          sourcePayloads?: Array<{
+            rows: Array<{ occurredAt: number; rowData: any }>;
+            sourceKey: string;
+          }>;
+        },
+        Array<any>,
         Name
       >;
       toggleCalculation: FunctionReference<
@@ -264,13 +841,42 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
+      updateSnapshotProfile: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          currentSlug: string;
+          description?: string;
+          isActive?: boolean;
+          name?: string;
+          slug?: string;
+        },
+        string,
+        Name
+      >;
       upsertCalculationDefinition: FunctionReference<
         "mutation",
         "internal",
         {
           enabled?: boolean;
           fieldPath?: string;
-          filters?: any;
+          filters: {
+            fieldRuleTree?: any;
+            fieldRules: Array<{
+              field: string;
+              op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+              rightOperand:
+                | { kind: "literal"; value: any }
+                | { field: string; kind: "field" };
+            }>;
+            timeRange?: {
+              kind:
+                | "last_month"
+                | "last_3_months"
+                | "month_to_date"
+                | "year_to_date";
+            };
+          };
           groupBy?: Array<string>;
           indicatorSlug: string;
           normalization?: any;
@@ -287,15 +893,101 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         {
+          adapterKey?: string;
+          dateFieldKey?: string;
           enabled?: boolean;
+          entityType: string;
+          fieldCatalog?: Array<{
+            filterable?: boolean;
+            isArray?: boolean;
+            isNullable?: boolean;
+            isSystem?: boolean;
+            key: string;
+            label: string;
+            referenceTable?: string;
+            sourcePath?: string;
+            sourceTable?: string;
+            valueType: string;
+          }>;
+          label: string;
+          materializationIndexKey?: string;
+          metadata?: any;
+          profileSlug?: string;
+          rowKeyStrategy?: string;
+          schedulePreset:
+            | "manual"
+            | "daily"
+            | "weekly_monday"
+            | "monthly_first_day";
+          scopeDefinition?: any;
+          selectedFieldKeys?: Array<string>;
+          sourceKey: string;
+          sourceKind?: "materialized_rows";
+        },
+        string,
+        Name
+      >;
+      upsertDataSourceSetting: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          adapterKey?: string;
+          allowedRowKeyStrategies: Array<{ key: string; label: string }>;
+          allowedScopes: Array<{ key: string; label: string }>;
+          databaseKey?: string;
+          defaultDateFieldKey?: string;
+          defaultRowKeyStrategy?: string;
+          defaultScopeKey?: string;
+          defaultSelectedFieldKeys: Array<string>;
+          entityType: string;
+          fieldCatalog: Array<{
+            filterable?: boolean;
+            isArray?: boolean;
+            isNullable?: boolean;
+            isSystem?: boolean;
+            key: string;
+            label: string;
+            referenceTable?: string;
+            sourcePath?: string;
+            sourceTable?: string;
+            valueType: string;
+          }>;
+          idFieldSuggestions?: Array<{ key: string; label: string }>;
+          indexSuggestions?: Array<{
+            fields: Array<string>;
+            key: string;
+            label: string;
+          }>;
+          isActive?: boolean;
           label: string;
           metadata?: any;
+          schemaImportId?: string;
+          sourceKind: "materialized_rows";
+          tableKey?: string;
+          tableLabel?: string;
+          tableName?: string;
+        },
+        string,
+        Name
+      >;
+      upsertDerivedIndicator: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          description?: string;
+          enabled?: boolean;
+          formula: {
+            kind: "ratio" | "difference" | "sum";
+            operands: Array<{
+              indicatorSlug: string;
+              role?: "numerator" | "denominator" | "term";
+              weight?: number;
+            }>;
+          };
+          label: string;
           profileSlug: string;
-          sourceKey: string;
-          sourceKind:
-            | "component_table"
-            | "external_reader"
-            | "materialized_rows";
+          slug: string;
+          unit?: string;
         },
         string,
         Name
@@ -312,6 +1004,18 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           profileSlug: string;
           slug: string;
           unit?: string;
+        },
+        string,
+        Name
+      >;
+      upsertProfileMember: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          assignedBy?: string;
+          isActive?: boolean;
+          memberKey: string;
+          profileSlug: string;
         },
         string,
         Name

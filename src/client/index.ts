@@ -15,8 +15,40 @@ import type {
 } from "convex/server";
 import { v } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
+import { calculationFiltersValidator } from "../component/lib/calculationFilters.js";
 
 export type { ComponentApi } from "../component/_generated/component.js";
+
+export type AnalyticsReportSummary = {
+  _id: string
+  profileId: string
+  profileSlug: string
+  slug: string
+  name: string
+  description?: string
+  isArchived: boolean
+  createdByKey?: string
+  updatedByKey?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type AnalyticsReportWidget = {
+  _id: string
+  reportId: string
+  indicatorSlug: string
+  indicatorLabel: string
+  indicatorUnit?: string
+  indicatorKind: "base" | "derived"
+  order: number
+  createdAt: number
+  updatedAt?: number
+}
+
+export type AnalyticsReportDetail = {
+  report: AnalyticsReportSummary
+  widgets: AnalyticsReportWidget[]
+}
 
 const periodicityValidator = v.union(
   v.literal("weekly"),
@@ -157,8 +189,87 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    listReports: queryGeneric({
+      args: {
+        profileSlug: v.optional(v.string()),
+        includeArchived: v.optional(v.boolean()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.reportEngine.listReports, args);
+      },
+    }),
+
+    getReport: queryGeneric({
+      args: { reportId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.reportEngine.getReport, args);
+      },
+    }),
+
+    getReportBySlug: queryGeneric({
+      args: { slug: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.reportEngine.getReportBySlug, args);
+      },
+    }),
+
+    listProfileDataSources: queryGeneric({
+      args: { profileSlug: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "dataSource" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.listProfileDataSources, args);
+      },
+    }),
+
+    listDataSources: queryGeneric({
+      args: { includeDisabled: v.optional(v.boolean()) },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "dataSource" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.listDataSources, args);
+      },
+    }),
+
+    getDataSourceFilterOptions: queryGeneric({
+      args: { sourceKey: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "dataSource" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getDataSourceFilterOptions, args);
+      },
+    }),
+
     simulateSnapshot: queryGeneric({
-      args: { profileSlug: v.string(), snapshotAt: v.optional(v.number()) },
+      args: {
+        profileSlug: v.string(),
+        snapshotAt: v.optional(v.number()),
+        sourcePayloads: v.optional(
+          v.array(
+            v.object({
+              sourceKey: v.string(),
+              rows: v.array(
+                v.object({
+                  occurredAt: v.number(),
+                  rowData: v.any(),
+                })
+              ),
+            })
+          )
+        ),
+      },
       handler: async (ctx, args) => {
         if (options?.auth) {
           await options.auth(ctx, { type: "read", entityType: "snapshot" });
@@ -174,6 +285,29 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           await options.auth(ctx, { type: "read", entityType: "snapshot" });
         }
         return await ctx.runQuery(component.snapshotEngine.listSnapshots, args);
+      },
+    }),
+
+    listSnapshotValues: queryGeneric({
+      args: { snapshotId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotValue" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.listSnapshotValues, args);
+      },
+    }),
+
+    getSnapshotValueEvidenceDownloadUrl: queryGeneric({
+      args: { snapshotValueId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotEvidence" });
+        }
+        return await ctx.runQuery(
+          component.snapshotEngine.getSnapshotValueEvidenceDownloadUrl,
+          args
+        );
       },
     }),
 
@@ -212,15 +346,124 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
-    upsertDataSource: mutationGeneric({
+    createReport: mutationGeneric({
       args: {
         profileSlug: v.string(),
+        name: v.string(),
+        description: v.optional(v.string()),
+        slug: v.optional(v.string()),
+        createdByKey: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "insert", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.createReport, args);
+      },
+    }),
+
+    archiveReport: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        updatedByKey: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.archiveReport, args);
+      },
+    }),
+
+    updateReportMeta: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        name: v.optional(v.string()),
+        description: v.optional(v.string()),
+        slug: v.optional(v.string()),
+        isArchived: v.optional(v.boolean()),
+        updatedByKey: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.updateReportMeta, args);
+      },
+    }),
+
+    addReportWidget: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        indicatorSlug: v.string(),
+        indicatorLabel: v.string(),
+        indicatorUnit: v.optional(v.string()),
+        indicatorKind: v.union(v.literal("base"), v.literal("derived")),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.addReportWidget, args);
+      },
+    }),
+
+    removeReportWidget: mutationGeneric({
+      args: { widgetId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.removeReportWidget, args);
+      },
+    }),
+
+    reorderReportWidgets: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        widgetIds: v.array(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.reorderReportWidgets, args);
+      },
+    }),
+
+    upsertDataSource: mutationGeneric({
+      args: {
+        profileSlug: v.optional(v.string()),
         sourceKey: v.string(),
         label: v.string(),
-        sourceKind: v.union(
-          v.literal("component_table"),
-          v.literal("external_reader"),
-          v.literal("materialized_rows")
+        adapterKey: v.optional(v.string()),
+        sourceKind: v.optional(v.literal("materialized_rows")),
+        entityType: v.string(),
+        scopeDefinition: v.optional(v.any()),
+        selectedFieldKeys: v.optional(v.array(v.string())),
+        dateFieldKey: v.optional(v.string()),
+        rowKeyStrategy: v.optional(v.string()),
+        schedulePreset: v.union(
+          v.literal("manual"),
+          v.literal("daily"),
+          v.literal("weekly_monday"),
+          v.literal("monthly_first_day")
+        ),
+        fieldCatalog: v.optional(
+          v.array(
+            v.object({
+              key: v.string(),
+              label: v.string(),
+              valueType: v.string(),
+              filterable: v.optional(v.boolean()),
+              sourcePath: v.optional(v.string()),
+              sourceTable: v.optional(v.string()),
+              referenceTable: v.optional(v.string()),
+              isSystem: v.optional(v.boolean()),
+              isNullable: v.optional(v.boolean()),
+              isArray: v.optional(v.boolean()),
+            })
+          )
         ),
         metadata: v.optional(v.any()),
         enabled: v.optional(v.boolean()),
@@ -230,6 +473,27 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           await options.auth(ctx, { type: "insert", entityType: "dataSource" });
         }
         return await ctx.runMutation(component.snapshotEngine.upsertDataSource, args);
+      },
+    }),
+
+    replaceMaterializedRows: mutationGeneric({
+      args: {
+        sourceKey: v.string(),
+        rows: v.array(
+          v.object({
+            rowKey: v.string(),
+            occurredAt: v.number(),
+            rowData: v.any(),
+            sourceRecordId: v.optional(v.string()),
+            sourceEntityType: v.optional(v.string()),
+          })
+        ),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "dataSource" });
+        }
+        return await ctx.runMutation(component.snapshotEngine.replaceMaterializedRows, args);
       },
     }),
 
@@ -266,7 +530,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           v.literal("distinct_count")
         ),
         fieldPath: v.optional(v.string()),
-        filters: v.optional(v.any()),
+        filters: calculationFiltersValidator,
         groupBy: v.optional(v.array(v.string())),
         normalization: v.optional(v.any()),
         priority: v.optional(v.number()),
@@ -281,6 +545,53 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           component.snapshotEngine.upsertCalculationDefinition,
           args
         );
+      },
+    }),
+
+    upsertDerivedIndicator: mutationGeneric({
+      args: {
+        profileSlug: v.string(),
+        slug: v.string(),
+        label: v.string(),
+        unit: v.optional(v.string()),
+        description: v.optional(v.string()),
+        formula: v.object({
+          kind: v.union(
+            v.literal("ratio"),
+            v.literal("difference"),
+            v.literal("sum")
+          ),
+          operands: v.array(
+            v.object({
+              indicatorSlug: v.string(),
+              role: v.optional(
+                v.union(
+                  v.literal("numerator"),
+                  v.literal("denominator"),
+                  v.literal("term")
+                )
+              ),
+              weight: v.optional(v.number()),
+            })
+          ),
+        }),
+        enabled: v.optional(v.boolean()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "insert", entityType: "definition" });
+        }
+        return await ctx.runMutation(component.snapshotEngine.upsertDerivedIndicator, args);
+      },
+    }),
+
+    listDerivedIndicators: queryGeneric({
+      args: { profileSlug: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "definition" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.listDerivedIndicators, args);
       },
     }),
 
@@ -300,7 +611,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
               v.literal("distinct_count")
             ),
             fieldPath: v.optional(v.string()),
-            filters: v.optional(v.any()),
+            filters: calculationFiltersValidator,
             groupBy: v.optional(v.array(v.string())),
             normalization: v.optional(v.any()),
             priority: v.optional(v.number()),
@@ -330,39 +641,6 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
-    createSnapshot: mutationGeneric({
-      args: {
-        profileSlug: v.string(),
-        snapshotAt: v.optional(v.number()),
-        triggeredBy: v.optional(v.string()),
-        note: v.optional(v.string()),
-      },
-      handler: async (ctx, args) => {
-        if (options?.auth) {
-          await options.auth(ctx, { type: "insert", entityType: "snapshot" });
-        }
-        return await ctx.runMutation(component.snapshotEngine.createSnapshot, args);
-      },
-    }),
-
-    ingestSourceRows: mutationGeneric({
-      args: {
-        profileSlug: v.string(),
-        sourceKey: v.string(),
-        rows: v.array(
-          v.object({
-            occurredAt: v.number(),
-            rowData: v.any(),
-          })
-        ),
-      },
-      handler: async (ctx, args) => {
-        if (options?.auth) {
-          await options.auth(ctx, { type: "insert", entityType: "sourceRows" });
-        }
-        return await ctx.runMutation(component.snapshotEngine.ingestSourceRows, args);
-      },
-    }),
 
     getIndicatorBySlug: queryGeneric({
       args: {
@@ -402,41 +680,117 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
-    getValueByExternalId: queryGeneric({
+    getIntegrationValueByExternalId: queryGeneric({
       args: {
         externalId: v.string(),
       },
       handler: async (ctx, args) => {
         if (options?.auth) {
-          await options.auth(ctx, { type: "read", entityType: "value" });
+          await options.auth(ctx, { type: "read", entityType: "integration_value" });
         }
-        return await ctx.runQuery(component.snapshotEngine.getValueByExternalId, args);
+        return await ctx.runQuery(component.snapshotEngine.getIntegrationValueByExternalId, args);
       },
     }),
 
-    listValuesForSync: queryGeneric({
+    listIntegrationValuesForSync: queryGeneric({
       args: {
         profileSlug: v.optional(v.string()),
         limit: v.optional(v.number()),
       },
       handler: async (ctx, args) => {
         if (options?.auth) {
-          await options.auth(ctx, { type: "read", entityType: "value" });
+          await options.auth(ctx, { type: "read", entityType: "integration_value" });
         }
-        return await ctx.runQuery(component.snapshotEngine.listValuesForSync, args);
+        return await ctx.runQuery(component.snapshotEngine.listIntegrationValuesForSync, args);
       },
     }),
 
-    setValueExternalId: mutationGeneric({
+    setIntegrationValueExternalId: mutationGeneric({
       args: {
-        valueId: v.string(),
+        integrationValueId: v.string(),
         externalId: v.string(),
       },
       handler: async (ctx, args) => {
         if (options?.auth) {
-          await options.auth(ctx, { type: "update", entityType: "value" });
+          await options.auth(ctx, { type: "update", entityType: "integration_value" });
         }
-        return await ctx.runMutation(component.snapshotEngine.setValueExternalId, args);
+        return await ctx.runMutation(component.snapshotEngine.setIntegrationValueExternalId, args);
+      },
+    }),
+
+    listExports: queryGeneric({
+      args: {
+        requestedBy: v.optional(v.string()),
+        includePinned: v.optional(v.boolean()),
+        limit: v.optional(v.number()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "export" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.listExports, args);
+      },
+    }),
+
+    requestExport: mutationGeneric({
+      args: {
+        requestedBy: v.optional(v.string()),
+        name: v.optional(v.string()),
+        dataSourceKey: v.string(),
+        filters: v.object({
+          startDate: v.optional(v.number()),
+          endDate: v.optional(v.number()),
+          dateFieldKey: v.optional(v.string()),
+          fieldFilters: v.optional(
+            v.array(
+              v.object({
+                fieldKey: v.string(),
+                values: v.array(v.string()),
+              })
+            )
+          ),
+        }),
+        clonedFromExportId: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "insert", entityType: "export" });
+        }
+        return await ctx.runMutation(component.snapshotEngine.requestExport, args);
+      },
+    }),
+
+    regenerateExport: mutationGeneric({
+      args: {
+        exportId: v.string(),
+        requestedBy: v.optional(v.string()),
+        name: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "insert", entityType: "export" });
+        }
+        return await ctx.runMutation(component.snapshotEngine.regenerateExport, args);
+      },
+    }),
+
+    getExportDownloadUrl: queryGeneric({
+      args: { exportId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "export" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getExportDownloadUrl, args);
+      },
+    }),
+
+    deleteExportPermanently: mutationGeneric({
+      args: { exportId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "export" });
+        }
+        return await ctx.runMutation(component.snapshotEngine.deleteExportPermanently, args);
       },
     }),
 
@@ -505,7 +859,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
-    syncValuesToOkrhub: actionGeneric({
+    syncIntegrationValuesToOkrhub: actionGeneric({
       args: {
         profileSlug: v.optional(v.string()),
         limit: v.optional(v.number()),
@@ -516,7 +870,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
       handler: async (ctx, args) => {
         if (options?.auth) {
-          await options.auth(ctx, { type: "sync", entityType: "value" });
+          await options.auth(ctx, { type: "sync", entityType: "integration_value" });
         }
         const okrhubComponent = requireOkrhubComponent(options);
         const okrhubConfig = getOkrhubConfig(options);
@@ -525,7 +879,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           throw new Error("`sourceApp` è obbligatorio per sincronizzare i valori verso OKRHub.");
         }
 
-        const values = await ctx.runQuery(component.snapshotEngine.listValuesForSync, {
+        const integrationValues = await ctx.runQuery(component.snapshotEngine.listIntegrationValuesForSync, {
           profileSlug: args.profileSlug,
           limit: args.limit,
         });
@@ -534,24 +888,24 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         let failed = 0;
         let skippedMissingIndicatorExternalId = 0;
 
-        for (const valueRow of values) {
-          if (!valueRow.indicatorExternalId) {
+        for (const integrationValue of integrationValues) {
+          if (!integrationValue.indicatorExternalId) {
             skippedMissingIndicatorExternalId++;
             continue;
           }
           const result = await ctx.runMutation(okrhubComponent.okrhub.createIndicatorValue, {
             sourceApp,
             sourceUrl: args.sourceUrl ?? okrhubConfig.sourceUrl,
-            indicatorExternalId: valueRow.indicatorExternalId,
-            value: valueRow.value,
-            date: valueRow.measuredAt,
+            indicatorExternalId: integrationValue.indicatorExternalId,
+            value: integrationValue.value,
+            date: integrationValue.measuredAt,
           });
           if (!result.success) {
             failed++;
             continue;
           }
-          await ctx.runMutation(component.snapshotEngine.setValueExternalId, {
-            valueId: valueRow._id,
+          await ctx.runMutation(component.snapshotEngine.setIntegrationValueExternalId, {
+            integrationValueId: integrationValue._id,
             externalId: result.externalId,
           });
           succeeded++;
@@ -577,7 +931,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         }
 
         return {
-          processed: values.length,
+          processed: integrationValues.length,
           succeeded,
           failed,
           skippedMissingIndicatorExternalId,

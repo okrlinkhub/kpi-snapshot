@@ -8,7 +8,13 @@
  * @module
  */
 
+import type * as exportWorkflows from "../exportWorkflows.js";
 import type * as externalSources from "../externalSources.js";
+import type * as lib_calculationFilters from "../lib/calculationFilters.js";
+import type * as materialization from "../materialization.js";
+import type * as materializationReader from "../materializationReader.js";
+import type * as reportEngine from "../reportEngine.js";
+import type * as schemaRegistry from "../schemaRegistry.js";
 import type * as snapshotEngine from "../snapshotEngine.js";
 import type * as sync from "../sync.js";
 
@@ -20,7 +26,13 @@ import type {
 import { anyApi, componentsGeneric } from "convex/server";
 
 const fullApi: ApiFromModules<{
+  exportWorkflows: typeof exportWorkflows;
   externalSources: typeof externalSources;
+  "lib/calculationFilters": typeof lib_calculationFilters;
+  materialization: typeof materialization;
+  materializationReader: typeof materializationReader;
+  reportEngine: typeof reportEngine;
+  schemaRegistry: typeof schemaRegistry;
   snapshotEngine: typeof snapshotEngine;
   sync: typeof sync;
 }> = anyApi as any;

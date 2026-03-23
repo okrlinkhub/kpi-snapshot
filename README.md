@@ -1,6 +1,6 @@
 # @okrlinkhub/kpi-snapshot
 
-Componente Convex per KPI snapshot dinamici e configurabili: profili, sorgenti dati, regole di calcolo (`sum`, `count`, `avg`, `min`, `max`, `distinct_count`), snapshot manuali o pianificati e tracciamento dei calcoli.
+Componente Convex per KPI snapshot dinamici e configurabili: profili, `dataSources` globali dell'app, membership utenti-profili, regole di calcolo (`sum`, `count`, `avg`, `min`, `max`, `distinct_count`), snapshot manuali o pianificati e tracciamento dei calcoli.
 
 Da questa versione il package può essere usato in due modi:
 
@@ -29,20 +29,162 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 
 ## Cosa fa il package e cosa resta all'app host
 
-`kpi-snapshot` si occupa di:
+`kpi-snapshot` 2.x si occupa di:
 
 - definizione dei profili e delle regole di calcolo;
-- ricezione di `sourceRows` materializzate dalla tua app;
+- possesso di una sola tabella `dataSources`, globale e riusabile da tutti i profili;
+- periodicita` obbligatoria della `dataSource` tramite `schedulePreset`;
+- membership utenti-profili tramite `profileMembers`;
+- materializzazione globale per `dataSourceId`, senza binding persistiti source-profilo;
+- generazione di export CSV globali automatici per audit/materializzazione e di export custom opzionalmente `profile-scoped`, con persistenza su storage Convex;
 - generazione di `snapshot`, `snapshotValues` e storico `values`;
+- audit interno `snapshotValue -> sourceExportIds`;
+- calcolo di indicatori derivati direttamente nel componente;
+- persistenza di report profile-scoped e widget ordinabili, con `slug` globale univoco per deep-link stabili;
 - persistenza opzionale di `externalId` su `indicators` e `values`;
 - helper client-side `exposeApi(...)` per ridurre il boilerplate nell'app host.
 
 La tua app host continua a possedere:
 
 - autenticazione e autorizzazione;
-- lettura e normalizzazione dei dati di dominio;
+- adapter di lettura e normalizzazione dei dati di dominio;
 - scheduling dei cron;
+- eventuale orchestrazione UI/admin specifica del prodotto;
 - metadati di business necessari a OKRHub, ad esempio `companyExternalId`, `symbol` e `periodicity`.
+
+## Contratto di periodicita`
+
+Da questa revisione il modello distingue in modo esplicito tre concetti:
+
+- `dataSources.schedulePreset`: cadence operativa della source (`manual`, `daily`, `weekly_monday`, `monthly_first_day`);
+- `snapshotAt`: istante a cui viene calcolato uno snapshot;
+- `calculationDefinitions.filters.timeRange`: finestra analitica opzionale applicata ai record della source.
+
+Regole operative:
+
+- la periodicita` della `dataSource` e` obbligatoria e visibile anche quando si collega un indicatore;
+- le source schedulate (`daily`, `weekly_monday`, `monthly_first_day`) vengono trattate come dataset operativi limitati all'ultimo anno like-for-like;
+- `manual` resta l'unica modalita` senza finestra temporale automatica;
+- un refresh/materializzazione di una source puo` generare snapshot solo per gli indicatori che dipendono da quella source, invece di ricalcolare forzatamente tutto il profilo;
+- quando `snapshotAt` e` noto, il componente legge `analyticsMaterializedRows` tramite l'indice composto `by_data_source_and_occurred_at` invece di filtrare tutto in memoria;
+- per leggere KPI con cadence diverse, l'host dovrebbe usare l'ultimo valore disponibile per indicatore invece di assumere un unico snapshot globale.
+
+## Modello dati risultante
+
+- `dataSources` e` globale nell'app: ogni profilo sceglie quali source usare quando definisce KPI o export custom.
+- `materializationJobs` e `analyticsMaterializedRows` dipendono solo dalla source, non dal profilo.
+- `calculationDefinitions`, `indicators`, `derivedIndicators`, `snapshots` e `reports` restano profile-scoped.
+- ogni report ha uno `slug` globale univoco, così l'host puo` costruire route semplici come `/analytics/report/[slug]` senza includere il profilo nell'URL.
+- `analyticsExports` distingue:
+  - export automatici globali, prodotti da materializzazione o freeze audit;
+  - export custom legati opzionalmente a un profilo.
+- L'host non deve mantenere un catalogo runtime parallelo delle source: entita`, scope, row key e campo data vivono nella tabella componente `dataSourceSettings`, mentre `dataSources` salva solo l'istanza concreta scelta dall'admin.
+
+## Catalogo persistito schema-driven
+
+Da questa revisione il flusso corretto e`:
+
+- l'host carica uno o piu` `schema.ts` Convex tramite action Node lato app;
+- il componente memorizza gli schema importati nel registry `schemaImports`;
+- il componente rigenera automaticamente `dataSourceSettings` a partire da `databaseKey + tableName`;
+- l'import schema non resetta piu` in-line dati materializzati o job; quel wipe vive in un reset job separato e batch-safe;
+- la UI di creazione di una `dataSource` legge solo definizioni generate dal registry;
+- `databaseKey` diversi da `app` sono materializzabili solo se l'host registra un reader esplicito per quel namespace;
+- il solo `sourceKind` supportato e` `materialized_rows`.
+
+Campi principali di `schemaImports`:
+
+- `databaseKey`, `fileName`, `checksum`, `schemaSource`
+- `tables[]` con `tableName`, `tableKey`, `fields[]`, `indexes[]`
+
+Campi principali di `dataSourceSettings`:
+
+- `entityType` derivato (`databaseKey__tableName`)
+- `databaseKey`, `tableName`, `tableKey`, `tableLabel`
+- `allowedScopes`
+- `allowedRowKeyStrategies`
+- `idFieldSuggestions`, `indexSuggestions`
+- `defaultScopeKey`, `defaultRowKeyStrategy`, `defaultDateFieldKey`
+- `defaultSelectedFieldKeys`
+- `fieldCatalog`
+
+Campi principali di `dataSources` lato runtime:
+
+- `schedulePreset` come cadence operativa obbligatoria
+- `dateFieldKey` come campo temporale usato da filtri/materializzazione
+- `materializationIndexKey` opzionale per fissare un indice host-side compatibile con `dateFieldKey`
+
+API componente rilevanti:
+
+- `listSchemaImports`
+- `replaceSchemaImport`
+- `regenerateCatalogFromSchemas`
+- `deleteSchemaImport`
+- `listCatalogResetJobs`
+- `startCatalogReset`
+- `listDataSourceSettings`
+
+## Linea guida cron per tutti i consumer
+
+Per mantenere il componente semplice da distribuire e replicare su consumer diversi, `kpi-snapshot` non registra cron runtime e non richiede componenti cron dedicati.
+
+Ogni consumer deve definire **3 cron statici** nel proprio `convex/crons.ts`:
+
+- uno per le source con preset `daily`
+- uno per le source con preset `weekly_monday`
+- uno per le source con preset `monthly_first_day`
+
+Il package mantiene:
+
+- i preset di schedule nella tabella `dataSources`
+- le query di supporto per target schedulati e profili impattati (`listScheduledRefreshTargets`, `listProfileSlugsBySourceKey`)
+- il contratto dei metadati necessari per materializzare e mostrare la cadence della source
+
+L'host continua a possedere:
+
+- la pipeline batch-safe di materializzazione
+- i reader sui database reali
+- l'orchestrazione finale che, dopo la materializzazione, invoca `createSnapshotRun`
+
+Esempio consigliato:
+
+```ts
+import { cronJobs } from "convex/server";
+import { internal } from "./_generated/api";
+
+const crons = cronJobs();
+
+crons.cron(
+  "kpi-snapshot-refresh-daily",
+  "0 0 * * *",
+  internal.analyticsExports.runScheduledRefreshes,
+  { schedulePreset: "daily" }
+);
+
+crons.cron(
+  "kpi-snapshot-refresh-weekly-monday",
+  "0 0 * * 1",
+  internal.analyticsExports.runScheduledRefreshes,
+  { schedulePreset: "weekly_monday" }
+);
+
+crons.cron(
+  "kpi-snapshot-refresh-monthly-first-day",
+  "0 0 1 * *",
+  internal.analyticsExports.runScheduledRefreshes,
+  { schedulePreset: "monthly_first_day" }
+);
+
+export default crons;
+```
+
+Suggerimento implementativo host-side:
+
+1. chiedi al componente i target con `listScheduledRefreshTargets({ schedulePreset })`
+2. materializza ogni source con il reader host-side
+3. dopo la materializzazione, invoca `createSnapshotRun` per ogni profilo impattato passando `triggerSourceKey`
+
+In questo modo il refresh schedulato di una source aggiorna solo i KPI coerenti con quella cadence.
 
 ## Setup minimo nell'app host
 
@@ -82,12 +224,13 @@ async function requireAdmin(ctx: { db: any }) {
 export const {
   listProfiles,
   listProfileDefinitions,
+  listProfileDataSources,
   createSnapshotProfile,
   upsertDataSource,
   upsertIndicator,
   upsertCalculationDefinition,
-  createSnapshot,
-  ingestSourceRows,
+  listSnapshotValues,
+  getSnapshotValueEvidenceDownloadUrl,
 } = exposeApi(components.kpiSnapshot, {
   auth: async (ctx) => {
     await requireAdmin(ctx as any);
@@ -95,22 +238,33 @@ export const {
 });
 ```
 
-### 3. Invia i tuoi dati al componente
+### 3. Parsing schema e materializzazione
 
-Le righe che mandi al componente devono essere nel formato:
+L'app host:
+
+- parse gli `schema.ts` con una action Node separata dal componente;
+- salva il risultato nel componente e rigenera il catalogo persistito;
+- materializza tramite un reader registry host-side leggendo `databaseKey`, `tableName`, `fieldCatalog`, `rowKeyStrategy` e l'eventuale `materializationIndexKey` scelto sulla data source;
+- puo` supportare namespace aggiuntivi (es. `kpiSnapshot`) solo registrando reader dedicati.
+
+Il formato finale delle righe materializzate resta:
 
 ```ts
 {
+  rowKey: string;
   occurredAt: number;
   rowData: Record<string, unknown>;
+  sourceRecordId?: string;
+  sourceEntityType?: string;
 }
 ```
 
-Esempio:
+Esempio adapter:
 
 ```ts
 const invoices = await ctx.db.query("invoices").collect();
 const rows = invoices.map((invoice) => ({
+  rowKey: invoice.number,
   occurredAt: invoice.date,
   rowData: {
     amount: invoice.amount,
@@ -118,17 +272,41 @@ const rows = invoices.map((invoice) => ({
     date: invoice.date,
   },
 }));
-
-await ctx.runMutation(components.kpiSnapshot.snapshotEngine.ingestSourceRows, {
-  profileSlug: "finance",
-  sourceKey: "invoices",
-  rows,
-});
 ```
 
-### 4. Crea lo snapshot quando vuoi tu
+L'host aggiorna la data source del componente chiamando il proprio workflow di materializzazione batch-safe.
+La source resta globale; il `profileSlug` serve solo se vuoi anche concatenare uno snapshot profilo-specifico subito dopo il refresh.
 
-Il componente non ha cron interni. Uno snapshot parte solo quando la tua app chiama `createSnapshot`, tipicamente:
+### 4. Crea uno snapshot orchestrato dalla tua app host
+
+Il componente non ha cron interni. La tua app host puo':
+
+- materializzare da UI
+- materializzare dai 3 cron statici del consumer
+- chiamare `createSnapshot` in modo esplicito quando vuole un run storico dedicato
+
+Nel flusso consigliato, la materializzazione host aggiorna la source e il componente fa partire automaticamente `createSnapshotRun`:
+
+```ts
+await ctx.runMutation(api.kpiSnapshot.replaceMaterializedRows, {
+  sourceKey: "invoices",
+  rows,
+})
+
+await ctx.runAction(api.kpiSnapshot.createSnapshot, {
+  profileSlug: "finance",
+})
+```
+
+Durante `createSnapshot` orchestrato dalla tua app:
+
+- legge le righe materializzate correnti del profilo;
+- crea un `snapshotRunItem` per ogni definizione attiva;
+- congela una volta sola il dataset di ogni source usata nello snapshot;
+- salva l'export frozen in `analyticsExports`;
+- mantiene la tracciabilita' fino a `snapshotValue -> sourceExportIds -> analyticsExports`.
+
+Tipicamente la tua app usa `createSnapshot`:
 
 - da una pagina admin;
 - da un cron definito in `convex/crons.ts`;
@@ -168,10 +346,12 @@ export const {
 ### Flusso consigliato
 
 1. La tua app crea o aggiorna il profilo KPI.
-2. La tua app materializza i dati sorgente con `ingestSourceRows`.
+2. La tua app legge e normalizza i dati sorgente di dominio.
 3. La tua app collega gli indicatori locali a OKRHub con `ensureIndicatorOkrhubLink(...)`.
-4. La tua app crea uno snapshot con `createSnapshot(...)`.
-5. La tua app invia i nuovi `values` a OKRHub con `syncValuesToOkrhub(...)`.
+4. La tua app materializza le righe dominio con un workflow host batch-safe.
+5. I 3 cron statici del consumer richiamano `runScheduledRefreshes` usando i preset della source.
+6. La tua app crea uno snapshot manuale con `createSnapshot(...)` solo quando vuole un run storico esplicito.
+7. La tua app invia i nuovi `values` a OKRHub con `syncValuesToOkrhub(...)`.
 
 ## Modifiche minime richieste nell'app host
 
@@ -180,8 +360,9 @@ Se vuoi usare il package nel modo raccomandato, le modifiche minime lato app son
 1. Registrare `kpiSnapshot` in `convex/convex.config.ts`.
 2. Creare un file wrapper locale, ad esempio `convex/kpiSnapshot.ts`, che usi `exposeApi(...)`.
 3. Implementare il tuo controllo accessi nell'opzione `auth`.
-4. Creare almeno una mutation o action che legga le tue tabelle e chiami `ingestSourceRows`.
-5. Chiamare `createSnapshot` da UI, cron o automazione.
+4. Creare almeno una mutation o action che legga le tue tabelle e costruisca `sourcePayloads`.
+5. Definire i 3 cron statici del consumer che richiamano `runScheduledRefreshes`.
+6. Chiamare la tua action/mutation host `createSnapshot` da UI o automazione quando serve uno snapshot manuale.
 
 Se integri anche OKRHub, aggiungi inoltre:
 
@@ -208,9 +389,10 @@ Limite importante: `kpi-snapshot` non può inventare da solo metadati come `comp
 
 Funzioni principali esposte dal helper:
 
-- lettura: `listProfiles`, `listProfileDefinitions`, `simulateSnapshot`, `listSnapshots`, `getSnapshotExplain`, `listSnapshotRunErrors`
-- configurazione: `createSnapshotProfile`, `upsertDataSource`, `upsertIndicator`, `upsertCalculationDefinition`, `replaceProfileDefinitions`, `toggleCalculation`
-- esecuzione: `createSnapshot`, `ingestSourceRows`
+- lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
+- report builder: `listReports`, `getReport`, `getReportBySlug`, `createReport`, `archiveReport`, `updateReportMeta`, `addReportWidget`, `removeReportWidget`, `reorderReportWidgets`
+- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `replaceProfileDefinitions`, `toggleCalculation`
+- esecuzione: orchestrazione host-side di `createSnapshot`
 - mapping esterni: `getIndicatorBySlug`, `getIndicatorByExternalId`, `setIndicatorExternalId`, `getValueByExternalId`, `listValuesForSync`, `setValueExternalId`
 - integrazione OKRHub: `ensureIndicatorOkrhubLink`, `syncValuesToOkrhub`
 
@@ -220,13 +402,18 @@ Tabelle principali:
 
 - `snapshotProfiles`
 - `dataSources`
+- `analyticsMaterializedRows`
+- `analyticsExports`
 - `indicators`
 - `calculationDefinitions`
-- `sourceRows`
+- `derivedIndicators`
 - `snapshots`
+- `reports`
+- `reportWidgets`
 - `snapshotRuns`
 - `snapshotRunItems`
 - `snapshotValues`
+- `derivedSnapshotValues`
 - `calculationTraces`
 - `values`
 
@@ -234,14 +421,32 @@ Campi rilevanti per integrazione:
 
 - `indicators.externalId` opzionale
 - `values.externalId` opzionale
+- `snapshotValues.sourceExportIds`
+- `snapshotRunItems.sourceExportIds`
+- `derivedSnapshotValues.sourceExportIds`
 
 Questi campi restano opzionali per non rompere installazioni esistenti e sono usati solo quando vuoi collegare il componente a OKRHub o a un altro sistema esterno.
 
 ## Migrazione da versioni precedenti
 
+### Migrazione obbligatoria a `1.0.0`
+
+`1.0.0` introduce una breaking schema migration:
+
+- la tabella `sourceRows` viene rimossa;
+- la tua action/mutation host `createSnapshot` non legge piu' righe persistite nel componente;
+- ogni `snapshotValue` salva la propria evidence CSV tramite `evidenceRef`.
+
+Prima di aggiornare un'installazione esistente devi:
+
+1. svuotare completamente tutte le righe presenti nella tabella `sourceRows`;
+2. deployare lo schema/API della `1.0.0`;
+3. aggiornare l'app host per usare `createSnapshot(..., sourcePayloads)`;
+4. verificare che i download evidence risalgano correttamente a `snapshotValue -> snapshotRunItemId -> dataSourceId`.
+
 ### Nuovi `externalId`
 
-Le installazioni esistenti non richiedono una migrazione obbligatoria: i nuovi campi `externalId` sono opzionali.
+Le installazioni esistenti non richiedono una migrazione obbligatoria per i campi `externalId`: restano opzionali.
 
 Puoi popolarli in modo incrementale:
 
