@@ -65,6 +65,7 @@ export const setupDefaultSnapshotConfig = mutation({
       sourceKey: INVOICE_SOURCE,
       label: "Invoices materialized rows",
       sourceKind: "materialized_rows",
+      schedulePreset: "monthly_first_day",
       enabled: true,
     });
 
@@ -355,6 +356,12 @@ export const upsertDataSource = mutation({
       v.literal("component_table"),
       v.literal("external_reader"),
       v.literal("materialized_rows")
+    ),
+    schedulePreset: v.union(
+      v.literal("manual"),
+      v.literal("daily"),
+      v.literal("weekly_monday"),
+      v.literal("monthly_first_day")
     ),
     metadata: v.optional(v.any()),
     enabled: v.optional(v.boolean()),

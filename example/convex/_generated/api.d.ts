@@ -217,6 +217,148 @@ export declare const components: {
         Array<any>
       >;
     };
+    reportEngine: {
+      addReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          indicatorKind: "base" | "derived";
+          indicatorLabel: string;
+          indicatorSlug: string;
+          indicatorUnit?: string;
+          reportId: string;
+        },
+        string
+      >;
+      archiveReport: FunctionReference<
+        "mutation",
+        "internal",
+        { reportId: string; updatedByKey?: string },
+        null
+      >;
+      createReport: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          createdByKey?: string;
+          description?: string;
+          name: string;
+          profileSlug: string;
+          slug?: string;
+        },
+        { reportId: string; slug: string }
+      >;
+      getReport: FunctionReference<
+        "query",
+        "internal",
+        { reportId: string },
+        {
+          report: {
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            createdByKey?: string;
+            description?: string;
+            isArchived: boolean;
+            name: string;
+            profileId: string;
+            profileSlug: string;
+            slug: string;
+            updatedAt: number;
+            updatedByKey?: string;
+          };
+          widgets: Array<{
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            order: number;
+            reportId: string;
+            updatedAt?: number;
+          }>;
+        } | null
+      >;
+      getReportBySlug: FunctionReference<
+        "query",
+        "internal",
+        { slug: string },
+        {
+          report: {
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            createdByKey?: string;
+            description?: string;
+            isArchived: boolean;
+            name: string;
+            profileId: string;
+            profileSlug: string;
+            slug: string;
+            updatedAt: number;
+            updatedByKey?: string;
+          };
+          widgets: Array<{
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            order: number;
+            reportId: string;
+            updatedAt?: number;
+          }>;
+        } | null
+      >;
+      listReports: FunctionReference<
+        "query",
+        "internal",
+        { includeArchived?: boolean; profileSlug?: string },
+        Array<{
+          _creationTime: number;
+          _id: string;
+          createdAt: number;
+          createdByKey?: string;
+          description?: string;
+          isArchived: boolean;
+          name: string;
+          profileId: string;
+          profileSlug: string;
+          slug: string;
+          updatedAt: number;
+          updatedByKey?: string;
+        }>
+      >;
+      removeReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        { widgetId: string },
+        null
+      >;
+      reorderReportWidgets: FunctionReference<
+        "mutation",
+        "internal",
+        { reportId: string; widgetIds: Array<string> },
+        null
+      >;
+      updateReportMeta: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          description?: string;
+          isArchived?: boolean;
+          name?: string;
+          reportId: string;
+          slug?: string;
+          updatedByKey?: string;
+        },
+        { reportId: string; slug: string }
+      >;
+    };
     schemaRegistry: {
       deleteSchemaImport: FunctionReference<
         "mutation",
@@ -412,6 +554,16 @@ export declare const components: {
         { externalId: string },
         any | null
       >;
+      getLatestSnapshotValuesForProfile: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        {
+          snapshotAt: number | null;
+          snapshotId: string | null;
+          values: Array<any>;
+        }
+      >;
       getSnapshotExplain: FunctionReference<
         "query",
         "internal",
@@ -488,6 +640,18 @@ export declare const components: {
         { profileSlug: string },
         Array<any>
       >;
+      listProfileSlugsBySourceKey: FunctionReference<
+        "query",
+        "internal",
+        { sourceKey: string },
+        Array<string>
+      >;
+      listScheduledRefreshTargets: FunctionReference<
+        "query",
+        "internal",
+        { schedulePreset: "daily" | "weekly_monday" | "monthly_first_day" },
+        Array<any>
+      >;
       listSnapshotProfiles: FunctionReference<
         "query",
         "internal",
@@ -551,7 +715,9 @@ export declare const components: {
               fieldRules: Array<{
                 field: string;
                 op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
-                value: any;
+                rightOperand:
+                  | { kind: "literal"; value: any }
+                  | { field: string; kind: "field" };
               }>;
               timeRange?: {
                 kind:
@@ -651,7 +817,9 @@ export declare const components: {
             fieldRules: Array<{
               field: string;
               op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
-              value: any;
+              rightOperand:
+                | { kind: "literal"; value: any }
+                | { field: string; kind: "field" };
             }>;
             timeRange?: {
               kind:
@@ -693,10 +861,11 @@ export declare const components: {
             valueType: string;
           }>;
           label: string;
+          materializationIndexKey?: string;
           metadata?: any;
           profileSlug?: string;
           rowKeyStrategy?: string;
-          schedulePreset?:
+          schedulePreset:
             | "manual"
             | "daily"
             | "weekly_monday"

@@ -25,12 +25,12 @@ const operationValidator = v.union(
 
 const sourceKindValidator = v.literal('materialized_rows')
 
-const schedulePresetValidator = v.optional(v.union(
+const schedulePresetValidator = v.union(
   v.literal('manual'),
   v.literal('daily'),
   v.literal('weekly_monday'),
   v.literal('monthly_first_day')
-))
+)
 
 const derivedFormulaKindValidator = v.union(
   v.literal('ratio'),
@@ -172,6 +172,73 @@ type DerivedComputationInput = {
 type DataSourceDoc = Doc<'dataSources'>
 type DataSourceSettingDoc = Doc<'dataSourceSettings'>
 
+function isAutomaticSchedulePreset (schedulePreset: DataSourceDoc['schedulePreset']) {
+  return schedulePreset !== 'manual'
+}
+
+function getSchedulePresetLabel (schedulePreset: DataSourceDoc['schedulePreset']) {
+  switch (schedulePreset) {
+    case 'daily':
+      return 'Ogni giorno'
+    case 'weekly_monday':
+      return 'Ogni lunedi`'
+    case 'monthly_first_day':
+      return 'Ogni primo del mese'
+    default:
+      return 'Manuale'
+  }
+}
+
+function getLikeForLikeWindowStart (endMs: number) {
+  const endDate = new Date(endMs)
+  const startDate = new Date(endMs)
+  startDate.setUTCFullYear(endDate.getUTCFullYear() - 1)
+  return startDate.getTime()
+}
+
+function getDefaultAutomaticWindow (dataSource: DataSourceDoc, endMs: number) {
+  if (!isAutomaticSchedulePreset(dataSource.schedulePreset)) {
+    return null
+  }
+
+  return {
+    startDate: getLikeForLikeWindowStart(endMs),
+    endDate: endMs,
+    label: 'Ultimo anno like-for-like',
+  }
+}
+
+function clampExportFiltersToDataSourceWindow (
+  dataSource: DataSourceDoc,
+  filters?: ExportFilters
+) {
+  const requestedEndDate = typeof filters?.endDate === 'number'
+    ? filters.endDate
+    : Date.now()
+  const automaticWindow = getDefaultAutomaticWindow(dataSource, requestedEndDate)
+  if (!automaticWindow) {
+    return filters
+  }
+
+  return {
+    ...filters,
+    startDate: typeof filters?.startDate === 'number'
+      ? Math.max(filters.startDate, automaticWindow.startDate)
+      : automaticWindow.startDate,
+    endDate: typeof filters?.endDate === 'number'
+      ? Math.min(filters.endDate, automaticWindow.endDate)
+      : automaticWindow.endDate,
+  }
+}
+
+function buildDataSourceView (dataSource: DataSourceDoc) {
+  return {
+    ...dataSource,
+    schedulePresetLabel: getSchedulePresetLabel(dataSource.schedulePreset),
+    automaticWindow: getDefaultAutomaticWindow(dataSource, Date.now()),
+  }
+}
+
 function normalizeIndicatorLabelSnapshot (label: string) {
   return label.replace(/\s+/g, ' ').trim()
 }
@@ -195,9 +262,17 @@ function toFiniteNumber (value: unknown) {
   return value
 }
 
+function resolveOperandValue (rowData: unknown, operand: CalculationFieldRule['rightOperand']) {
+  if (operand.kind === 'field') {
+    return getNestedValue(rowData, operand.field)
+  }
+
+  return operand.value
+}
+
 function applyFilterRule (rowData: unknown, rule: CalculationFieldRule) {
   const left = getNestedValue(rowData, rule.field)
-  const right = rule.value
+  const right = resolveOperandValue(rowData, rule.rightOperand)
 
   switch (rule.op) {
     case 'eq':
@@ -213,7 +288,7 @@ function applyFilterRule (rowData: unknown, rule: CalculationFieldRule) {
     case 'lte':
       return typeof left === 'number' && typeof right === 'number' && left <= right
     case 'in':
-      return Array.isArray(right) ? right.includes(left) : false
+      return rule.rightOperand.kind === 'literal' && Array.isArray(right) ? right.includes(left) : false
     default:
       return false
   }
@@ -456,6 +531,7 @@ function buildConfigSnapshot (dataSource: DataSourceDoc) {
     selectedFieldKeys: dataSource.selectedFieldKeys,
     dateFieldKey: dataSource.dateFieldKey,
     rowKeyStrategy: dataSource.rowKeyStrategy,
+    schedulePreset: dataSource.schedulePreset,
     scopeDefinition: dataSource.scopeDefinition,
     fieldCatalog: dataSource.fieldCatalog,
     metadata: dataSource.metadata,
@@ -715,12 +791,18 @@ function validateDataSourceSelection (args: {
   scopeKind: string
   selectedFieldKeys: string[]
   dateFieldKey?: string
+  materializationIndexKey?: string
   rowKeyStrategy?: string
   dataSourceSetting: DataSourceSettingDoc
 }) {
   const allowedScopeKeys = new Set(args.dataSourceSetting.allowedScopes.map((scope) => scope.key))
   const allowedRowKeyKeys = new Set(args.dataSourceSetting.allowedRowKeyStrategies.map((rowKey) => rowKey.key))
   const validFieldKeys = new Set(args.dataSourceSetting.fieldCatalog.map((field) => field.key))
+  const validMaterializationIndexKeys = new Set(
+    (args.dataSourceSetting.indexSuggestions ?? [])
+      .filter((index) => index.fields.length === 1 && index.fields[0] === args.dateFieldKey)
+      .map((index) => index.key)
+  )
 
   if (!allowedScopeKeys.has(args.scopeKind)) {
     throw new Error(`Scope non supportato per ${args.entityType}: ${args.scopeKind}`)
@@ -738,6 +820,14 @@ function validateDataSourceSelection (args: {
   }
   if (args.dateFieldKey && !validFieldKeys.has(args.dateFieldKey)) {
     throw new Error(`Campo data non supportato per ${args.entityType}: ${args.dateFieldKey}`)
+  }
+  if (args.materializationIndexKey && !args.dateFieldKey) {
+    throw new Error(`Seleziona un campo data prima di configurare l'indice di materializzazione per ${args.entityType}`)
+  }
+  if (args.materializationIndexKey && !validMaterializationIndexKeys.has(args.materializationIndexKey)) {
+    throw new Error(
+      `Indice di materializzazione non valido per ${args.entityType}: ${args.materializationIndexKey}`
+    )
   }
 }
 
@@ -817,18 +907,84 @@ async function getDerivedIndicatorByProfileAndSlug (
     .unique()
 }
 
+function buildDefinitionView (
+  definition: Doc<'calculationDefinitions'>,
+  indicatorsById: Map<Id<'indicators'>, Doc<'indicators'>>,
+  dataSourcesById: Map<Id<'dataSources'>, DataSourceDoc>
+) {
+  const source = dataSourcesById.get(definition.dataSourceId)
+
+  return {
+    ...definition,
+    indicatorSlug: indicatorsById.get(definition.indicatorId)?.slug ?? null,
+    sourceKey: source?.sourceKey ?? null,
+    sourceLabel: source?.label ?? null,
+    sourceSchedulePreset: source?.schedulePreset ?? null,
+    sourceSchedulePresetLabel: source ? getSchedulePresetLabel(source.schedulePreset) : null,
+    sourceAutomaticWindow: source ? getDefaultAutomaticWindow(source, Date.now()) : null,
+  }
+}
+
+async function buildIndicatorView (
+  ctx: any,
+  profileId: Id<'snapshotProfiles'>,
+  indicator: Doc<'indicators'>
+) {
+  const definitions = await ctx.db
+    .query('calculationDefinitions')
+    .withIndex('by_profile_and_indicator', (q: any) =>
+      q.eq('profileId', profileId).eq('indicatorId', indicator._id)
+    )
+    .collect()
+
+  const dataSourceIds = [...new Set(
+    definitions.map((definition: Doc<'calculationDefinitions'>) => definition.dataSourceId)
+  )]
+  const dataSources = (await Promise.all(dataSourceIds.map(async (dataSourceId) => {
+    const row = await ctx.db.get(dataSourceId)
+    return row && !row.archivedAt ? row : null
+  }))).filter((row): row is DataSourceDoc => row !== null)
+  const dataSourcesById = new Map(dataSources.map((dataSource) => [dataSource._id, dataSource] as const))
+
+  return {
+    ...indicator,
+    definitions: definitions.map((definition: Doc<'calculationDefinitions'>) => ({
+      ...definition,
+      sourceKey: dataSourcesById.get(definition.dataSourceId)?.sourceKey ?? null,
+      sourceLabel: dataSourcesById.get(definition.dataSourceId)?.label ?? null,
+      sourceSchedulePreset: dataSourcesById.get(definition.dataSourceId)?.schedulePreset ?? null,
+      sourceSchedulePresetLabel: dataSourcesById.get(definition.dataSourceId)
+        ? getSchedulePresetLabel(dataSourcesById.get(definition.dataSourceId)!.schedulePreset)
+        : null,
+    })),
+    sourceSummaries: dataSources.map((dataSource) => ({
+      sourceKey: dataSource.sourceKey,
+      label: dataSource.label,
+      schedulePreset: dataSource.schedulePreset,
+      schedulePresetLabel: getSchedulePresetLabel(dataSource.schedulePreset),
+      automaticWindow: getDefaultAutomaticWindow(dataSource, Date.now()),
+    })),
+  }
+}
+
 async function listMaterializedRowsForDataSource (
   ctx: any,
   dataSourceId: Id<'dataSources'>,
   snapshotAt?: number
 ) {
-  const rows = await ctx.db
-    .query('analyticsMaterializedRows')
-    .withIndex('by_data_source', (q: any) => q.eq('dataSourceId', dataSourceId))
-    .collect()
+  const rows = snapshotAt == null
+    ? await ctx.db
+      .query('analyticsMaterializedRows')
+      .withIndex('by_data_source', (q: any) => q.eq('dataSourceId', dataSourceId))
+      .collect()
+    : await ctx.db
+      .query('analyticsMaterializedRows')
+      .withIndex('by_data_source_and_occurred_at', (q: any) =>
+        q.eq('dataSourceId', dataSourceId).lte('occurredAt', snapshotAt)
+      )
+      .collect()
 
   return rows
-    .filter((row: Doc<'analyticsMaterializedRows'>) => snapshotAt == null || row.occurredAt <= snapshotAt)
     .map((row: Doc<'analyticsMaterializedRows'>) => ({
       rowKey: row.rowKey,
       occurredAt: row.occurredAt,
@@ -1244,7 +1400,9 @@ export const listDataSources = query({
     const filteredRows = args.includeDisabled
       ? activeRows
       : activeRows.filter((item) => item.enabled)
-    return filteredRows.sort((left, right) => (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt))
+    return filteredRows
+      .sort((left, right) => (right.updatedAt ?? right.createdAt) - (left.updatedAt ?? left.createdAt))
+      .map((row) => buildDataSourceView(row))
   },
 })
 
@@ -1259,6 +1417,7 @@ export const upsertDataSource = mutation({
     scopeDefinition: v.optional(v.any()),
     selectedFieldKeys: v.optional(v.array(v.string())),
     dateFieldKey: v.optional(v.string()),
+    materializationIndexKey: v.optional(v.string()),
     rowKeyStrategy: v.optional(v.string()),
     schedulePreset: schedulePresetValidator,
     fieldCatalog: v.optional(v.array(fieldCatalogItemValidator)),
@@ -1286,6 +1445,9 @@ export const upsertDataSource = mutation({
     const nextDateFieldKey = args.dateFieldKey
       ?? existing?.dateFieldKey
       ?? dataSourceSetting.defaultDateFieldKey
+    const nextMaterializationIndexKey = args.materializationIndexKey !== undefined
+      ? args.materializationIndexKey.trim() || undefined
+      : existing?.materializationIndexKey
     const nextRowKeyStrategy = args.rowKeyStrategy
       ?? existing?.rowKeyStrategy
       ?? dataSourceSetting.defaultRowKeyStrategy
@@ -1299,6 +1461,7 @@ export const upsertDataSource = mutation({
       scopeKind: nextScopeKind,
       selectedFieldKeys: nextSelectedFieldKeys,
       dateFieldKey: nextDateFieldKey,
+      materializationIndexKey: nextMaterializationIndexKey,
       rowKeyStrategy: nextRowKeyStrategy,
       dataSourceSetting,
     })
@@ -1314,8 +1477,9 @@ export const upsertDataSource = mutation({
       scopeDefinition: { kind: nextScopeKind },
       selectedFieldKeys: nextSelectedFieldKeys,
       dateFieldKey: nextDateFieldKey,
+      materializationIndexKey: nextMaterializationIndexKey,
       rowKeyStrategy: nextRowKeyStrategy,
-      schedulePreset: args.schedulePreset ?? existing?.schedulePreset ?? 'manual',
+      schedulePreset: args.schedulePreset,
       fieldCatalog: dataSourceSetting.fieldCatalog,
       metadata: args.metadata,
       enabled: args.enabled ?? existing?.enabled ?? true,
@@ -1339,6 +1503,7 @@ export const upsertDataSource = mutation({
       scopeDefinition: nextPatch.scopeDefinition,
       selectedFieldKeys: nextPatch.selectedFieldKeys,
       dateFieldKey: nextPatch.dateFieldKey,
+      materializationIndexKey: nextPatch.materializationIndexKey,
       rowKeyStrategy: nextPatch.rowKeyStrategy,
       schedulePreset: nextPatch.schedulePreset,
       fieldCatalog: nextPatch.fieldCatalog,
@@ -1477,6 +1642,7 @@ export const requestExport = mutation({
       throw new Error('Rigenera prima la materializzazione della data source')
     }
 
+    const effectiveFilters = clampExportFiltersToDataSourceWindow(dataSource, args.filters)
     const rows = applyExportFilters(
       (await listMaterializedRowsForDataSource(ctx, dataSource._id)).map((row: {
         occurredAt: number
@@ -1485,7 +1651,7 @@ export const requestExport = mutation({
         occurredAt: row.occurredAt,
         rowData: row.rowData,
       })),
-      args.filters
+      effectiveFilters
     )
     const exportId = await createCompletedExport(ctx, {
       profileId: profile?._id,
@@ -1493,7 +1659,7 @@ export const requestExport = mutation({
       name: args.name,
       dataSource,
       rows,
-      filters: args.filters,
+      filters: effectiveFilters,
       usageKind: 'manual',
       pinnedByAudit: false,
       clonedFromExportId: args.clonedFromExportId
@@ -1522,6 +1688,10 @@ export const regenerateExport = mutation({
       throw new Error('Data source non trovata')
     }
 
+    const effectiveFilters = clampExportFiltersToDataSourceWindow(
+      dataSource,
+      exportRow.filters as ExportFilters | undefined
+    )
     const rows = applyExportFilters(
       (await listMaterializedRowsForDataSource(ctx, dataSource._id)).map((row: {
         occurredAt: number
@@ -1530,7 +1700,7 @@ export const regenerateExport = mutation({
         occurredAt: row.occurredAt,
         rowData: row.rowData,
       })),
-      exportRow.filters as ExportFilters | undefined
+      effectiveFilters
     )
 
     const newExportId = await createCompletedExport(ctx, {
@@ -1539,7 +1709,7 @@ export const regenerateExport = mutation({
       name: args.name ?? exportRow.name,
       dataSource,
       rows,
-      filters: exportRow.filters as ExportFilters | undefined,
+      filters: effectiveFilters,
       usageKind: 'manual',
       pinnedByAudit: false,
       regeneratedFromExportId: exportRow._id,
@@ -1675,7 +1845,11 @@ export const getIndicatorBySlug = query({
   returns: v.union(v.any(), v.null()),
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug)
-    return await getIndicatorByProfileAndSlug(ctx, profile._id, args.slug)
+    const indicator = await getIndicatorByProfileAndSlug(ctx, profile._id, args.slug)
+    if (!indicator) {
+      return null
+    }
+    return await buildIndicatorView(ctx, profile._id, indicator)
   },
 })
 
@@ -2035,14 +2209,16 @@ export const listProfileDefinitions = query({
 
     return {
       profile,
-      indicators,
-      dataSources,
+      indicators: await Promise.all(indicators.map(async (indicator) => (
+        await buildIndicatorView(ctx, profile._id, indicator)
+      ))),
+      dataSources: dataSources.map((dataSource) => buildDataSourceView(dataSource)),
       derivedIndicators,
-      definitions: definitions.map((definition) => ({
-        ...definition,
-        indicatorSlug: indicatorsById.get(definition.indicatorId)?.slug ?? null,
-        sourceKey: dataSourcesById.get(definition.dataSourceId)?.sourceKey ?? null,
-      })),
+      definitions: definitions.map((definition) => buildDefinitionView(
+        definition,
+        indicatorsById,
+        dataSourcesById
+      )),
     }
   },
 })
@@ -2055,7 +2231,82 @@ export const listProfileDataSources = query({
   handler: async (ctx, args) => {
     await getProfileBySlug(ctx, args.profileSlug)
     const rows = await ctx.db.query('dataSources').collect()
-    return rows.filter((row) => !row.archivedAt)
+    return rows
+      .filter((row) => !row.archivedAt)
+      .sort((left, right) => left.label.localeCompare(right.label))
+      .map((row) => buildDataSourceView(row))
+  },
+})
+
+export const listScheduledRefreshTargets = query({
+  args: {
+    schedulePreset: v.union(
+      v.literal('daily'),
+      v.literal('weekly_monday'),
+      v.literal('monthly_first_day')
+    ),
+  },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    const [dataSources, profiles, definitions] = await Promise.all([
+      ctx.db.query('dataSources').collect(),
+      ctx.db.query('snapshotProfiles').collect(),
+      ctx.db.query('calculationDefinitions').collect(),
+    ])
+    const activeProfiles = profiles.filter((profile) => !profile.archivedAt)
+    const activeDataSources = dataSources.filter((dataSource) => (
+      !dataSource.archivedAt &&
+      dataSource.enabled &&
+      dataSource.schedulePreset === args.schedulePreset
+    ))
+
+    const profileSlugsById = new Map(activeProfiles.map((profile) => [profile._id, profile.slug] as const))
+    const profileSlugsByDataSourceId = new Map<Id<'dataSources'>, string[]>()
+
+    for (const definition of definitions) {
+      const profileSlug = profileSlugsById.get(definition.profileId)
+      if (!profileSlug) {
+        continue
+      }
+      const currentProfileSlugs = profileSlugsByDataSourceId.get(definition.dataSourceId) ?? []
+      if (!currentProfileSlugs.includes(profileSlug)) {
+        currentProfileSlugs.push(profileSlug)
+      }
+      profileSlugsByDataSourceId.set(definition.dataSourceId, currentProfileSlugs)
+    }
+
+    return activeDataSources.map((dataSource) => ({
+      ...buildDataSourceView(dataSource),
+      profileSlugs: profileSlugsByDataSourceId.get(dataSource._id) ?? [],
+    }))
+  },
+})
+
+export const listProfileSlugsBySourceKey = query({
+  args: {
+    sourceKey: v.string(),
+  },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    const dataSource = await getDataSourceByKey(ctx, args.sourceKey)
+    if (!dataSource || dataSource.archivedAt) {
+      return []
+    }
+
+    const [profiles, definitions] = await Promise.all([
+      ctx.db.query('snapshotProfiles').collect(),
+      ctx.db.query('calculationDefinitions').withIndex('by_data_source', (q) => q.eq('dataSourceId', dataSource._id)).collect(),
+    ])
+    const activeProfilesById = new Map(
+      profiles
+        .filter((profile) => !profile.archivedAt)
+        .map((profile) => [profile._id, profile.slug] as const)
+    )
+
+    return [...new Set(definitions
+      .map((definition) => activeProfilesById.get(definition.profileId))
+      .filter((profileSlug): profileSlug is string => Boolean(profileSlug))
+    )]
   },
 })
 
@@ -2092,10 +2343,9 @@ export const simulateSnapshot = query({
       ctx.db.query('dataSources').collect(),
     ])
     const dataSources = allDataSources.filter((row) => !row.archivedAt)
-
-    const enabledDefinitions = definitions.filter((definition) => definition.enabled)
     const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]))
     const dataSourcesById = new Map(dataSources.map((source) => [source._id, source]))
+    const enabledDefinitions = definitions.filter((definition) => definition.enabled)
     const payloadBySourceKey = new Map(
       (args.sourcePayloads ?? []).map((payload) => [
         payload.sourceKey,
@@ -2174,10 +2424,17 @@ export const createSnapshotRun = mutation({
       ctx.db.query('derivedIndicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
     ])
     const dataSources = allDataSources.filter((row) => !row.archivedAt)
-
-    const enabledDefinitions = definitions.filter((definition) => definition.enabled)
     const indicatorsById = new Map(indicators.map((indicator) => [indicator._id, indicator]))
     const dataSourcesById = new Map(dataSources.map((source) => [source._id, source]))
+    const enabledDefinitions = definitions.filter((definition) => {
+      if (!definition.enabled) {
+        return false
+      }
+      if (!args.triggerSourceKey) {
+        return true
+      }
+      return dataSourcesById.get(definition.dataSourceId)?.sourceKey === args.triggerSourceKey
+    })
 
     const snapshotId = await ctx.db.insert('snapshots', {
       profileId: profile._id,
@@ -2598,6 +2855,80 @@ export const listSnapshotValues = query({
     })))
 
     return [...baseRows, ...derivedValueRows].sort((left, right) => right.computedAt - left.computedAt)
+  },
+})
+
+export const getLatestSnapshotValuesForProfile = query({
+  args: {
+    profileSlug: v.string(),
+  },
+  returns: v.object({
+    snapshotId: v.union(v.string(), v.null()),
+    snapshotAt: v.union(v.number(), v.null()),
+    values: v.array(v.any()),
+  }),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug)
+    const [indicators, derivedIndicators] = await Promise.all([
+      ctx.db.query('indicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
+      ctx.db.query('derivedIndicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
+    ])
+
+    const latestBaseRows = (await Promise.all(indicators.map(async (indicator) => {
+      const rows = await ctx.db
+        .query('snapshotValues')
+        .withIndex('by_indicator', (q) => q.eq('indicatorId', indicator._id))
+        .order('desc')
+        .take(1)
+      const valueRow = rows[0]
+      if (!valueRow || valueRow.profileId !== profile._id) {
+        return null
+      }
+      return {
+        ...valueRow,
+        indicatorSlug: indicator.slug,
+        indicatorUnit: indicator.unit ?? null,
+        isDerived: false,
+        sourceExportCount: valueRow.sourceExportIds.length,
+        derivedFromIndicatorSlugs: [],
+        formulaKind: null,
+      }
+    }))).filter((row) => row !== null)
+
+    const latestDerivedRows = (await Promise.all(derivedIndicators.map(async (indicator) => {
+      const rows = await ctx.db
+        .query('derivedSnapshotValues')
+        .withIndex('by_derived_indicator', (q) => q.eq('derivedIndicatorId', indicator._id))
+        .order('desc')
+        .take(1)
+      const row = rows[0]
+      if (!row || row.profileId !== profile._id) {
+        return null
+      }
+      return {
+        _id: `derived:${row._id}`,
+        indicatorLabelSnapshot: row.derivedIndicatorLabelSnapshot,
+        indicatorUnit: row.derivedIndicatorUnit ?? null,
+        indicatorSlug: row.derivedIndicatorSlug,
+        value: row.value,
+        computedAt: row.computedAt,
+        evidenceRowCount: row.baseSnapshotValueIds.length,
+        isDerived: true,
+        sourceExportCount: row.sourceExportIds.length,
+        derivedFromIndicatorSlugs: row.baseIndicatorSlugs,
+        formulaKind: row.formulaKind,
+        snapshotId: String(row.snapshotId),
+      }
+    }))).filter((row) => row !== null)
+
+    const values = [...latestBaseRows, ...latestDerivedRows]
+      .sort((left, right) => (right.computedAt ?? 0) - (left.computedAt ?? 0))
+
+    return {
+      snapshotId: values[0]?.snapshotId ? String(values[0].snapshotId) : null,
+      snapshotAt: values[0]?.computedAt ?? null,
+      values,
+    }
   },
 })
 

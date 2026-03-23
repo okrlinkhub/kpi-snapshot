@@ -33,12 +33,14 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 
 - definizione dei profili e delle regole di calcolo;
 - possesso di una sola tabella `dataSources`, globale e riusabile da tutti i profili;
+- periodicita` obbligatoria della `dataSource` tramite `schedulePreset`;
 - membership utenti-profili tramite `profileMembers`;
 - materializzazione globale per `dataSourceId`, senza binding persistiti source-profilo;
 - generazione di export CSV globali automatici per audit/materializzazione e di export custom opzionalmente `profile-scoped`, con persistenza su storage Convex;
 - generazione di `snapshot`, `snapshotValues` e storico `values`;
 - audit interno `snapshotValue -> sourceExportIds`;
 - calcolo di indicatori derivati direttamente nel componente;
+- persistenza di report profile-scoped e widget ordinabili, con `slug` globale univoco per deep-link stabili;
 - persistenza opzionale di `externalId` su `indicators` e `values`;
 - helper client-side `exposeApi(...)` per ridurre il boilerplate nell'app host.
 
@@ -50,11 +52,29 @@ La tua app host continua a possedere:
 - eventuale orchestrazione UI/admin specifica del prodotto;
 - metadati di business necessari a OKRHub, ad esempio `companyExternalId`, `symbol` e `periodicity`.
 
+## Contratto di periodicita`
+
+Da questa revisione il modello distingue in modo esplicito tre concetti:
+
+- `dataSources.schedulePreset`: cadence operativa della source (`manual`, `daily`, `weekly_monday`, `monthly_first_day`);
+- `snapshotAt`: istante a cui viene calcolato uno snapshot;
+- `calculationDefinitions.filters.timeRange`: finestra analitica opzionale applicata ai record della source.
+
+Regole operative:
+
+- la periodicita` della `dataSource` e` obbligatoria e visibile anche quando si collega un indicatore;
+- le source schedulate (`daily`, `weekly_monday`, `monthly_first_day`) vengono trattate come dataset operativi limitati all'ultimo anno like-for-like;
+- `manual` resta l'unica modalita` senza finestra temporale automatica;
+- un refresh/materializzazione di una source puo` generare snapshot solo per gli indicatori che dipendono da quella source, invece di ricalcolare forzatamente tutto il profilo;
+- quando `snapshotAt` e` noto, il componente legge `analyticsMaterializedRows` tramite l'indice composto `by_data_source_and_occurred_at` invece di filtrare tutto in memoria;
+- per leggere KPI con cadence diverse, l'host dovrebbe usare l'ultimo valore disponibile per indicatore invece di assumere un unico snapshot globale.
+
 ## Modello dati risultante
 
 - `dataSources` e` globale nell'app: ogni profilo sceglie quali source usare quando definisce KPI o export custom.
 - `materializationJobs` e `analyticsMaterializedRows` dipendono solo dalla source, non dal profilo.
 - `calculationDefinitions`, `indicators`, `derivedIndicators`, `snapshots` e `reports` restano profile-scoped.
+- ogni report ha uno `slug` globale univoco, così l'host puo` costruire route semplici come `/analytics/report/[slug]` senza includere il profilo nell'URL.
 - `analyticsExports` distingue:
   - export automatici globali, prodotti da materializzazione o freeze audit;
   - export custom legati opzionalmente a un profilo.
@@ -88,6 +108,12 @@ Campi principali di `dataSourceSettings`:
 - `defaultSelectedFieldKeys`
 - `fieldCatalog`
 
+Campi principali di `dataSources` lato runtime:
+
+- `schedulePreset` come cadence operativa obbligatoria
+- `dateFieldKey` come campo temporale usato da filtri/materializzazione
+- `materializationIndexKey` opzionale per fissare un indice host-side compatibile con `dateFieldKey`
+
 API componente rilevanti:
 
 - `listSchemaImports`
@@ -108,11 +134,17 @@ Ogni consumer deve definire **3 cron statici** nel proprio `convex/crons.ts`:
 - uno per le source con preset `weekly_monday`
 - uno per le source con preset `monthly_first_day`
 
-Il package mantiene solo:
+Il package mantiene:
 
 - i preset di schedule nella tabella `dataSources`
+- le query di supporto per target schedulati e profili impattati (`listScheduledRefreshTargets`, `listProfileSlugsBySourceKey`)
+- il contratto dei metadati necessari per materializzare e mostrare la cadence della source
+
+L'host continua a possedere:
+
 - la pipeline batch-safe di materializzazione
-- l'auto trigger opzionale di `createSnapshotRun` quando l'host passa esplicitamente un `profileSlug`
+- i reader sui database reali
+- l'orchestrazione finale che, dopo la materializzazione, invoca `createSnapshotRun`
 
 Esempio consigliato:
 
@@ -145,6 +177,14 @@ crons.cron(
 
 export default crons;
 ```
+
+Suggerimento implementativo host-side:
+
+1. chiedi al componente i target con `listScheduledRefreshTargets({ schedulePreset })`
+2. materializza ogni source con il reader host-side
+3. dopo la materializzazione, invoca `createSnapshotRun` per ogni profilo impattato passando `triggerSourceKey`
+
+In questo modo il refresh schedulato di una source aggiorna solo i KPI coerenti con quella cadence.
 
 ## Setup minimo nell'app host
 
@@ -204,7 +244,7 @@ L'app host:
 
 - parse gli `schema.ts` con una action Node separata dal componente;
 - salva il risultato nel componente e rigenera il catalogo persistito;
-- materializza tramite un reader registry host-side leggendo `databaseKey`, `tableName`, `fieldCatalog` e `rowKeyStrategy` dal catalogo generato;
+- materializza tramite un reader registry host-side leggendo `databaseKey`, `tableName`, `fieldCatalog`, `rowKeyStrategy` e l'eventuale `materializationIndexKey` scelto sulla data source;
 - puo` supportare namespace aggiuntivi (es. `kpiSnapshot`) solo registrando reader dedicati.
 
 Il formato finale delle righe materializzate resta:
@@ -350,6 +390,7 @@ Limite importante: `kpi-snapshot` non può inventare da solo metadati come `comp
 Funzioni principali esposte dal helper:
 
 - lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
+- report builder: `listReports`, `getReport`, `getReportBySlug`, `createReport`, `archiveReport`, `updateReportMeta`, `addReportWidget`, `removeReportWidget`, `reorderReportWidgets`
 - configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `replaceProfileDefinitions`, `toggleCalculation`
 - esecuzione: orchestrazione host-side di `createSnapshot`
 - mapping esterni: `getIndicatorBySlug`, `getIndicatorByExternalId`, `setIndicatorExternalId`, `getValueByExternalId`, `listValuesForSync`, `setValueExternalId`
@@ -367,6 +408,8 @@ Tabelle principali:
 - `calculationDefinitions`
 - `derivedIndicators`
 - `snapshots`
+- `reports`
+- `reportWidgets`
 - `snapshotRuns`
 - `snapshotRunItems`
 - `snapshotValues`

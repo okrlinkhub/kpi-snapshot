@@ -19,6 +19,37 @@ import { calculationFiltersValidator } from "../component/lib/calculationFilters
 
 export type { ComponentApi } from "../component/_generated/component.js";
 
+export type AnalyticsReportSummary = {
+  _id: string
+  profileId: string
+  profileSlug: string
+  slug: string
+  name: string
+  description?: string
+  isArchived: boolean
+  createdByKey?: string
+  updatedByKey?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export type AnalyticsReportWidget = {
+  _id: string
+  reportId: string
+  indicatorSlug: string
+  indicatorLabel: string
+  indicatorUnit?: string
+  indicatorKind: "base" | "derived"
+  order: number
+  createdAt: number
+  updatedAt?: number
+}
+
+export type AnalyticsReportDetail = {
+  report: AnalyticsReportSummary
+  widgets: AnalyticsReportWidget[]
+}
+
 const periodicityValidator = v.union(
   v.literal("weekly"),
   v.literal("monthly"),
@@ -158,6 +189,39 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    listReports: queryGeneric({
+      args: {
+        profileSlug: v.optional(v.string()),
+        includeArchived: v.optional(v.boolean()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.reportEngine.listReports, args);
+      },
+    }),
+
+    getReport: queryGeneric({
+      args: { reportId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.reportEngine.getReport, args);
+      },
+    }),
+
+    getReportBySlug: queryGeneric({
+      args: { slug: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.reportEngine.getReportBySlug, args);
+      },
+    }),
+
     listProfileDataSources: queryGeneric({
       args: { profileSlug: v.string() },
       handler: async (ctx, args) => {
@@ -282,6 +346,91 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    createReport: mutationGeneric({
+      args: {
+        profileSlug: v.string(),
+        name: v.string(),
+        description: v.optional(v.string()),
+        slug: v.optional(v.string()),
+        createdByKey: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "insert", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.createReport, args);
+      },
+    }),
+
+    archiveReport: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        updatedByKey: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.archiveReport, args);
+      },
+    }),
+
+    updateReportMeta: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        name: v.optional(v.string()),
+        description: v.optional(v.string()),
+        slug: v.optional(v.string()),
+        isArchived: v.optional(v.boolean()),
+        updatedByKey: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.updateReportMeta, args);
+      },
+    }),
+
+    addReportWidget: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        indicatorSlug: v.string(),
+        indicatorLabel: v.string(),
+        indicatorUnit: v.optional(v.string()),
+        indicatorKind: v.union(v.literal("base"), v.literal("derived")),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.addReportWidget, args);
+      },
+    }),
+
+    removeReportWidget: mutationGeneric({
+      args: { widgetId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.removeReportWidget, args);
+      },
+    }),
+
+    reorderReportWidgets: mutationGeneric({
+      args: {
+        reportId: v.string(),
+        widgetIds: v.array(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "report" });
+        }
+        return await ctx.runMutation(component.reportEngine.reorderReportWidgets, args);
+      },
+    }),
+
     upsertDataSource: mutationGeneric({
       args: {
         profileSlug: v.optional(v.string()),
@@ -294,6 +443,12 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         selectedFieldKeys: v.optional(v.array(v.string())),
         dateFieldKey: v.optional(v.string()),
         rowKeyStrategy: v.optional(v.string()),
+        schedulePreset: v.union(
+          v.literal("manual"),
+          v.literal("daily"),
+          v.literal("weekly_monday"),
+          v.literal("monthly_first_day")
+        ),
         fieldCatalog: v.optional(
           v.array(
             v.object({

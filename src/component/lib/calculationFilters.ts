@@ -10,10 +10,21 @@ export const fieldRuleOperatorValidator = v.union(
   v.literal('in')
 )
 
+export const calculationOperandValidator = v.union(
+  v.object({
+    kind: v.literal('literal'),
+    value: v.any(),
+  }),
+  v.object({
+    kind: v.literal('field'),
+    field: v.string(),
+  })
+)
+
 export const fieldRuleValidator = v.object({
   field: v.string(),
   op: fieldRuleOperatorValidator,
-  value: v.any(),
+  rightOperand: calculationOperandValidator,
 })
 
 export const timeRangeKindValidator = v.union(
@@ -42,10 +53,20 @@ export type FieldRuleOperator =
   | 'lte'
   | 'in'
 
+export type CalculationOperand =
+  | {
+    kind: 'literal'
+    value: unknown
+  }
+  | {
+    kind: 'field'
+    field: string
+  }
+
 export type CalculationFieldRule = {
   field: string
   op: FieldRuleOperator
-  value: unknown
+  rightOperand: CalculationOperand
 }
 
 export type CalculationRuleGroupOperator = 'and' | 'or'

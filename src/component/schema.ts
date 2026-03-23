@@ -148,8 +148,9 @@ export default defineSchema({
     scopeDefinition: v.optional(v.any()),
     selectedFieldKeys: v.array(v.string()),
     dateFieldKey: v.optional(v.string()),
+    materializationIndexKey: v.optional(v.string()),
     rowKeyStrategy: v.optional(v.string()),
-    schedulePreset: v.optional(schedulePresetValidator),
+    schedulePreset: schedulePresetValidator,
     fieldCatalog: v.optional(v.array(fieldCatalogItemValidator)),
     metadata: v.optional(v.any()),
     enabled: v.boolean(),
@@ -514,7 +515,42 @@ export default defineSchema({
   })
     .index("by_snapshot", ["snapshotId"])
     .index("by_profile", ["profileId"])
+    .index("by_derived_indicator", ["derivedIndicatorId"])
     .index("by_snapshot_and_slug", ["snapshotId", "derivedIndicatorSlug"]),
+
+  reports: defineTable({
+    profileId: v.id("snapshotProfiles"),
+    slug: v.string(),
+    name: v.string(),
+    description: v.optional(v.string()),
+    isArchived: v.boolean(),
+    createdByKey: v.optional(v.string()),
+    updatedByKey: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_slug", ["slug"])
+    .index("by_is_archived", ["isArchived"])
+    .index("by_profile_and_is_archived", ["profileId", "isArchived"]),
+
+  reportWidgets: defineTable({
+    reportId: v.id("reports"),
+    indicatorSlug: v.string(),
+    indicatorLabel: v.string(),
+    indicatorUnit: v.optional(v.string()),
+    indicatorKind: v.union(v.literal("base"), v.literal("derived")),
+    order: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.optional(v.number()),
+  })
+    .index("by_report", ["reportId"])
+    .index("by_report_and_order", ["reportId", "order"])
+    .index("by_report_and_indicator_kind_and_indicator_slug", [
+      "reportId",
+      "indicatorKind",
+      "indicatorSlug",
+    ]),
 
   externalSources: defineTable({
     name: v.string(),

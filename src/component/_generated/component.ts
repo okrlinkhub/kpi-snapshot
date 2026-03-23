@@ -201,6 +201,157 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
     };
+    reportEngine: {
+      addReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          indicatorKind: "base" | "derived";
+          indicatorLabel: string;
+          indicatorSlug: string;
+          indicatorUnit?: string;
+          reportId: string;
+        },
+        string,
+        Name
+      >;
+      archiveReport: FunctionReference<
+        "mutation",
+        "internal",
+        { reportId: string; updatedByKey?: string },
+        null,
+        Name
+      >;
+      createReport: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          createdByKey?: string;
+          description?: string;
+          name: string;
+          profileSlug: string;
+          slug?: string;
+        },
+        { reportId: string; slug: string },
+        Name
+      >;
+      getReport: FunctionReference<
+        "query",
+        "internal",
+        { reportId: string },
+        {
+          report: {
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            createdByKey?: string;
+            description?: string;
+            isArchived: boolean;
+            name: string;
+            profileId: string;
+            profileSlug: string;
+            slug: string;
+            updatedAt: number;
+            updatedByKey?: string;
+          };
+          widgets: Array<{
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            order: number;
+            reportId: string;
+            updatedAt?: number;
+          }>;
+        } | null,
+        Name
+      >;
+      getReportBySlug: FunctionReference<
+        "query",
+        "internal",
+        { slug: string },
+        {
+          report: {
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            createdByKey?: string;
+            description?: string;
+            isArchived: boolean;
+            name: string;
+            profileId: string;
+            profileSlug: string;
+            slug: string;
+            updatedAt: number;
+            updatedByKey?: string;
+          };
+          widgets: Array<{
+            _creationTime: number;
+            _id: string;
+            createdAt: number;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            order: number;
+            reportId: string;
+            updatedAt?: number;
+          }>;
+        } | null,
+        Name
+      >;
+      listReports: FunctionReference<
+        "query",
+        "internal",
+        { includeArchived?: boolean; profileSlug?: string },
+        Array<{
+          _creationTime: number;
+          _id: string;
+          createdAt: number;
+          createdByKey?: string;
+          description?: string;
+          isArchived: boolean;
+          name: string;
+          profileId: string;
+          profileSlug: string;
+          slug: string;
+          updatedAt: number;
+          updatedByKey?: string;
+        }>,
+        Name
+      >;
+      removeReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        { widgetId: string },
+        null,
+        Name
+      >;
+      reorderReportWidgets: FunctionReference<
+        "mutation",
+        "internal",
+        { reportId: string; widgetIds: Array<string> },
+        null,
+        Name
+      >;
+      updateReportMeta: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          description?: string;
+          isArchived?: boolean;
+          name?: string;
+          reportId: string;
+          slug?: string;
+          updatedByKey?: string;
+        },
+        { reportId: string; slug: string },
+        Name
+      >;
+    };
     schemaRegistry: {
       deleteSchemaImport: FunctionReference<
         "mutation",
@@ -423,6 +574,17 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any | null,
         Name
       >;
+      getLatestSnapshotValuesForProfile: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string },
+        {
+          snapshotAt: number | null;
+          snapshotId: string | null;
+          values: Array<any>;
+        },
+        Name
+      >;
       getSnapshotExplain: FunctionReference<
         "query",
         "internal",
@@ -510,6 +672,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Array<any>,
         Name
       >;
+      listProfileSlugsBySourceKey: FunctionReference<
+        "query",
+        "internal",
+        { sourceKey: string },
+        Array<string>,
+        Name
+      >;
+      listScheduledRefreshTargets: FunctionReference<
+        "query",
+        "internal",
+        { schedulePreset: "daily" | "weekly_monday" | "monthly_first_day" },
+        Array<any>,
+        Name
+      >;
       listSnapshotProfiles: FunctionReference<
         "query",
         "internal",
@@ -580,7 +756,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
               fieldRules: Array<{
                 field: string;
                 op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
-                value: any;
+                rightOperand:
+                  | { kind: "literal"; value: any }
+                  | { field: string; kind: "field" };
               }>;
               timeRange?: {
                 kind:
@@ -687,7 +865,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             fieldRules: Array<{
               field: string;
               op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
-              value: any;
+              rightOperand:
+                | { kind: "literal"; value: any }
+                | { field: string; kind: "field" };
             }>;
             timeRange?: {
               kind:
@@ -730,10 +910,11 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             valueType: string;
           }>;
           label: string;
+          materializationIndexKey?: string;
           metadata?: any;
           profileSlug?: string;
           rowKeyStrategy?: string;
-          schedulePreset?:
+          schedulePreset:
             | "manual"
             | "daily"
             | "weekly_monday"

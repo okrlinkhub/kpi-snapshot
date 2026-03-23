@@ -5,26 +5,37 @@ import { api } from "../convex/_generated/api";
 type RuleOperation = "sum" | "count" | "avg" | "min" | "max" | "distinct_count";
 type FilterOperator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
 type FilterValueType = "string" | "number" | "boolean" | "null" | "json" | "csv";
+type FilterOperandSource = "literal" | "field";
 type CalculationTimeRangeKind = "last_month" | "last_3_months" | "month_to_date" | "year_to_date";
 type AdminTab = "setup" | "rules" | "snapshots" | "data";
+type SchedulePreset = "manual" | "daily" | "weekly_monday" | "monthly_first_day";
 
 type FilterDraft = {
   id: string;
   field: string;
   op: FilterOperator;
+  operandSource: FilterOperandSource;
+  compareField: string;
   valueType: FilterValueType;
   valueText: string;
   valueBoolean: boolean;
 };
 
+type FilterRightOperand =
+  | { kind: "literal"; value: unknown }
+  | { kind: "field"; field: string };
+
 type RuleDefinition = {
   _id: string;
   indicatorSlug: string | null;
   sourceKey: string | null;
+  sourceLabel?: string | null;
+  sourceSchedulePreset?: SchedulePreset | null;
+  sourceSchedulePresetLabel?: string | null;
   operation: RuleOperation;
   fieldPath?: string;
   filters: {
-    fieldRules: Array<{ field: string; op: FilterOperator; value: unknown }>;
+    fieldRules: Array<{ field: string; op: FilterOperator; rightOperand: FilterRightOperand }>;
     timeRange?: { kind: CalculationTimeRangeKind };
   };
   groupBy?: Array<string>;
@@ -37,7 +48,14 @@ type RuleDefinition = {
 type ProfileDefinitionsPayload = {
   profile: { slug: string; name: string };
   indicators: Array<{ _id: string; slug: string; label: string }>;
-  dataSources: Array<{ _id: string; sourceKey: string; label: string }>;
+  dataSources: Array<{
+    _id: string;
+    sourceKey: string;
+    label: string;
+    schedulePreset: SchedulePreset;
+    schedulePresetLabel: string;
+    automaticWindow?: { label: string } | null;
+  }>;
   definitions: Array<RuleDefinition>;
 };
 
@@ -91,6 +109,20 @@ function toFilterValue(filter: FilterDraft): unknown {
   return filter.valueText;
 }
 
+function toRightOperand(filter: FilterDraft): FilterRightOperand {
+  if (filter.operandSource === "field") {
+    return {
+      kind: "field",
+      field: filter.compareField,
+    };
+  }
+
+  return {
+    kind: "literal",
+    value: toFilterValue(filter),
+  };
+}
+
 function normalizeFilterValueToDraft(value: unknown): Pick<FilterDraft, "valueType" | "valueText" | "valueBoolean"> {
   if (value === null) return { valueType: "null", valueText: "", valueBoolean: false };
   if (typeof value === "boolean") return { valueType: "boolean", valueText: "", valueBoolean: value };
@@ -103,14 +135,21 @@ function normalizeFilterValueToDraft(value: unknown): Pick<FilterDraft, "valueTy
 function parseFiltersForEdit(filters: RuleDefinition["filters"] | undefined): Array<FilterDraft> {
   if (!filters?.fieldRules?.length) return [];
   return filters.fieldRules
-    .filter((item): item is { field?: unknown; op?: unknown; value?: unknown } => typeof item === "object" && item !== null)
+    .filter((item): item is { field?: unknown; op?: unknown; rightOperand?: unknown } => typeof item === "object" && item !== null)
     .map((item) => {
       const op = filterOps.includes(item.op as FilterOperator) ? (item.op as FilterOperator) : "eq";
-      const valueDraft = normalizeFilterValueToDraft(item.value);
+      const rightOperand = item.rightOperand;
+      const valueDraft = rightOperand && typeof rightOperand === "object" && "kind" in rightOperand && (rightOperand as { kind?: unknown }).kind === "literal"
+        ? normalizeFilterValueToDraft((rightOperand as { value?: unknown }).value)
+        : normalizeFilterValueToDraft("");
       return {
         id: uid(),
         field: typeof item.field === "string" ? item.field : "",
         op,
+        operandSource: rightOperand && typeof rightOperand === "object" && "kind" in rightOperand && (rightOperand as { kind?: unknown }).kind === "field" ? "field" : "literal",
+        compareField: rightOperand && typeof rightOperand === "object" && "field" in rightOperand && typeof (rightOperand as { field?: unknown }).field === "string"
+          ? (rightOperand as { field: string }).field
+          : "",
         ...valueDraft,
       };
     });
@@ -125,7 +164,9 @@ function summarizeFilters(filters: RuleDefinition["filters"] | undefined): strin
       if (typeof item !== "object" || item === null) return "Filtro non valido";
       const field = "field" in item ? String((item as { field: unknown }).field) : "?";
       const op = "op" in item ? String((item as { op: unknown }).op) : "?";
-      const value = "value" in item ? JSON.stringify((item as { value: unknown }).value) : "?";
+      const value = "rightOperand" in item
+        ? JSON.stringify((item as { rightOperand: unknown }).rightOperand)
+        : "?";
       return `${field} ${op} ${value}`;
     })
     .join(" AND ");
@@ -139,6 +180,8 @@ function buildMonthAssignedPreset(): Array<FilterDraft> {
       id: uid(),
       field: "monthRef",
       op: "neq",
+      operandSource: "literal",
+      compareField: "",
       valueType: "null",
       valueText: "",
       valueBoolean: false,
@@ -156,6 +199,7 @@ export default function App() {
   const [sourceKey, setSourceKey] = useState(DEFAULT_SOURCE_KEY);
   const [sourceLabel, setSourceLabel] = useState("Invoices materialized rows");
   const [sourceKind, setSourceKind] = useState<"materialized_rows" | "component_table" | "external_reader">("materialized_rows");
+  const [sourceSchedulePreset, setSourceSchedulePreset] = useState<SchedulePreset>("manual");
   const [newIndicatorSlug, setNewIndicatorSlug] = useState("invoice_count_all");
   const [newIndicatorLabel, setNewIndicatorLabel] = useState("Invoice Count");
   const [newOperation, setNewOperation] = useState<RuleOperation>("count");
@@ -224,6 +268,8 @@ export default function App() {
         id: uid(),
         field: "",
         op: "eq",
+        operandSource: "literal",
+        compareField: "",
         valueType: "string",
         valueText: "",
         valueBoolean: false,
@@ -260,6 +306,8 @@ export default function App() {
         id: uid(),
         field: "amount",
         op: "gt",
+        operandSource: "literal",
+        compareField: "",
         valueType: "number",
         valueText: "1000",
         valueBoolean: false,
@@ -280,6 +328,8 @@ export default function App() {
         id: uid(),
         field: "category",
         op: "in",
+        operandSource: "literal",
+        compareField: "",
         valueType: "csv",
         valueText: "software, services",
         valueBoolean: false,
@@ -322,7 +372,7 @@ export default function App() {
         .map((f) => ({
           field: f.field.trim(),
           op: f.op,
-          value: toFilterValue(f),
+          rightOperand: toRightOperand(f),
         }));
       const nextFilters = {
         fieldRules: parsedFilters,
@@ -495,6 +545,24 @@ export default function App() {
               <option value="external_reader">external_reader</option>
             </select>
           </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <label className="space-y-1">
+              <span className="text-sm font-semibold">Periodicita` data source</span>
+              <select
+                value={sourceSchedulePreset}
+                onChange={(e) => setSourceSchedulePreset(e.target.value as SchedulePreset)}
+                className="w-full px-3 py-2 rounded border border-slate-300 bg-transparent"
+              >
+                <option value="manual">Manuale</option>
+                <option value="daily">Ogni giorno</option>
+                <option value="weekly_monday">Ogni lunedi`</option>
+                <option value="monthly_first_day">Ogni primo del mese</option>
+              </select>
+            </label>
+            <div className="rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+              Le source schedulate vengono pensate per un dataset operativo limitato all&apos;ultimo anno like-for-like.
+            </div>
+          </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -514,6 +582,7 @@ export default function App() {
                     sourceKey,
                     label: sourceLabel,
                     sourceKind,
+                    schedulePreset: sourceSchedulePreset,
                     enabled: true,
                   });
                   setOpMessage("Profilo e data source salvati.");
@@ -591,7 +660,7 @@ export default function App() {
                 <option value="">sourceKey...</option>
                 {availableSources.map((source) => (
                   <option key={source._id} value={source.sourceKey}>
-                    {source.sourceKey} ({source.label})
+                    {source.sourceKey} ({source.label} - {source.schedulePresetLabel})
                   </option>
                 ))}
               </select>
@@ -602,6 +671,16 @@ export default function App() {
               </select>
             </div>
             <p className="text-xs text-slate-600">{operationDescriptions[newOperation]}</p>
+            {availableSources.find((source) => source.sourceKey === sourceKey) && (
+              <div className="rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+                Source selezionata: <strong>{availableSources.find((source) => source.sourceKey === sourceKey)?.label}</strong>
+                {" · "}
+                periodicita`: <strong>{availableSources.find((source) => source.sourceKey === sourceKey)?.schedulePresetLabel}</strong>
+                {availableSources.find((source) => source.sourceKey === sourceKey)?.automaticWindow?.label
+                  ? ` · finestra automatica: ${availableSources.find((source) => source.sourceKey === sourceKey)?.automaticWindow?.label}`
+                  : ""}
+              </div>
+            )}
 
             <div className="grid md:grid-cols-4 gap-3">
               <input value={newFieldPath} onChange={(e) => setNewFieldPath(e.target.value)} className="px-3 py-2 rounded border border-slate-300 bg-transparent" placeholder={operationNeedsFieldPath ? "fieldPath richiesto" : "fieldPath opzionale"} />
@@ -705,6 +784,9 @@ export default function App() {
                     </div>
                     <div className="text-xs text-slate-600">
                       op={definition.operation} | fieldPath={definition.fieldPath || "(root)"} | prioritaEsecuzione={definition.priority}
+                    </div>
+                    <div className="text-xs text-slate-600">
+                      sourceLabel={definition.sourceLabel || "(n/d)"} | periodicita`={definition.sourceSchedulePresetLabel || "(n/d)"}
                     </div>
                     <div className="text-xs text-slate-600">filtri: {summarizeFilters(definition.filters)}</div>
                     <div className="flex flex-wrap gap-2 pt-1">
