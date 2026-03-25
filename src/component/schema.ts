@@ -2,6 +2,7 @@ import { defineSchema, defineTable } from 'convex/server'
 import { v } from 'convex/values'
 import { calculationFiltersValidator } from './lib/calculationFilters.js'
 import { derivedFormulaValidator } from '../shared/derivedFormula.js'
+import { storedReportWidgetValidator } from '../shared/reportWidgets.js'
 const sourceKindValidator = v.literal('materialized_rows')
 
 const schedulePresetValidator = v.union(
@@ -580,26 +581,10 @@ export default defineSchema({
     .index("by_is_archived", ["isArchived"])
     .index("by_profile_and_is_archived", ["profileId", "isArchived"]),
 
-  reportWidgets: defineTable({
-    reportId: v.id("reports"),
-    sourceProfileId: v.id("snapshotProfiles"),
-    sourceProfileSlug: v.string(),
-    indicatorSlug: v.string(),
-    indicatorLabel: v.string(),
-    indicatorUnit: v.optional(v.string()),
-    indicatorKind: v.union(v.literal("base"), v.literal("derived")),
-    order: v.number(),
-    createdAt: v.number(),
-    updatedAt: v.optional(v.number()),
-  })
+  reportWidgets: defineTable(storedReportWidgetValidator)
     .index("by_report", ["reportId"])
     .index("by_report_and_order", ["reportId", "order"])
-    .index("by_report_and_kind_and_source_profile_and_slug", [
-      "reportId",
-      "indicatorKind",
-      "sourceProfileId",
-      "indicatorSlug",
-    ]),
+    .index("by_report_and_widget_type", ["reportId", "widgetType"]),
 
   externalSources: defineTable({
     name: v.string(),

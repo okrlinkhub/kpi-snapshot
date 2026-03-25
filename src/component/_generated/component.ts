@@ -208,12 +208,31 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "mutation",
         "internal",
         {
-          indicatorKind: "base" | "derived";
-          indicatorLabel: string;
-          indicatorSlug: string;
-          indicatorUnit?: string;
+          chartKind?: "line" | "area" | "bar" | "pie";
+          description?: string;
+          layout?: {
+            emphasis: "default" | "accent" | "subtle";
+            height: "sm" | "md" | "lg";
+            width: "compact" | "wide" | "full";
+          };
+          member?: {
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            sourceProfileSlug: string;
+          };
+          members?: Array<{
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            sourceProfileSlug: string;
+          }>;
           reportId: string;
-          sourceProfileSlug: string;
+          timeRange?: { limit: number; mode: "latest_n_snapshots" };
+          title?: string;
+          widgetType: "single_value" | "chart";
         },
         string,
         Name
@@ -257,20 +276,58 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             updatedAt: number;
             updatedByKey?: string;
           };
-          widgets: Array<{
-            _creationTime: number;
-            _id: string;
-            createdAt: number;
-            indicatorKind: "base" | "derived";
-            indicatorLabel: string;
-            indicatorSlug: string;
-            indicatorUnit?: string;
-            order: number;
-            reportId: string;
-            sourceProfileId: string;
-            sourceProfileSlug: string;
-            updatedAt?: number;
-          }>;
+          widgets: Array<
+            | {
+                _creationTime: number;
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _creationTime: number;
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              }
+          >;
         } | null,
         Name
       >;
@@ -293,20 +350,58 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             updatedAt: number;
             updatedByKey?: string;
           };
-          widgets: Array<{
-            _creationTime: number;
-            _id: string;
-            createdAt: number;
-            indicatorKind: "base" | "derived";
-            indicatorLabel: string;
-            indicatorSlug: string;
-            indicatorUnit?: string;
-            order: number;
-            reportId: string;
-            sourceProfileId: string;
-            sourceProfileSlug: string;
-            updatedAt?: number;
-          }>;
+          widgets: Array<
+            | {
+                _creationTime: number;
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _creationTime: number;
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              }
+          >;
         } | null,
         Name
       >;
@@ -581,6 +676,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any | null,
         Name
       >;
+      getIndicatorHistory: FunctionReference<
+        "query",
+        "internal",
+        {
+          indicatorKind: "base" | "derived";
+          indicatorSlug: string;
+          limit?: number;
+          profileSlug: string;
+        },
+        {
+          indicatorKind: "base" | "derived";
+          indicatorLabel: string;
+          indicatorSlug: string;
+          indicatorUnit: string | null;
+          points: Array<{
+            computedAt: number;
+            isStaleInactive: boolean;
+            recordedValue: number | null;
+            snapshotAt: number | null;
+            snapshotId: string;
+            staleReason: "indicator_disabled" | "operand_disabled" | null;
+            value: number | null;
+          }>;
+          profileSlug: string;
+        },
+        Name
+      >;
       getIntegrationValueByExternalId: FunctionReference<
         "query",
         "internal",
@@ -599,11 +721,161 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
+      getReportWidgetData: FunctionReference<
+        "query",
+        "internal",
+        {
+          widget:
+            | {
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              };
+        },
+        any,
+        Name
+      >;
+      getReportWidgetsData: FunctionReference<
+        "query",
+        "internal",
+        {
+          widgets: Array<
+            | {
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              }
+          >;
+        },
+        Array<any>,
+        Name
+      >;
       getSnapshotExplain: FunctionReference<
         "query",
         "internal",
         { snapshotId: string },
         any | null,
+        Name
+      >;
+      getSnapshotIndicatorSlice: FunctionReference<
+        "query",
+        "internal",
+        {
+          members: Array<{
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            sourceProfileSlug: string;
+          }>;
+          profileSlug?: string;
+          snapshotId?: string;
+        },
+        {
+          items: Array<{
+            computedAt: number | null;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit: string | null;
+            isStaleInactive: boolean;
+            memberKey: string;
+            recordedValue: number | null;
+            snapshotAt: number | null;
+            snapshotId: string | null;
+            sourceProfileSlug: string;
+            staleReason: "indicator_disabled" | "operand_disabled" | null;
+            value: number | null;
+          }>;
+          snapshotAt: number | null;
+          snapshotId: string | null;
+        },
         Name
       >;
       getSnapshotRunStatus: FunctionReference<

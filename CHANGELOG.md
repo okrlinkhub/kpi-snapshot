@@ -6,8 +6,11 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-03-25
+
 ### Breaking changes
 
+- `reportWidgets` non usa piu` il vecchio shape `1 widget = 1 indicatore`: il modello ora distingue `single_value` e `chart`, con `members[]`, `layout`, `chartKind` e `timeRange`.
 - `createSnapshotRun` è ora puramente async: crea `snapshot` + `snapshotRun`, ritorna subito e completa il lavoro in background.
 - `snapshots.status` e `snapshotRuns.status` usano ora il workflow operativo `queued | loading | processing | deriving | freezing | completed | error`.
 - Nuova tabella `snapshotRunSources` per tracciare avanzamento e retry per source.
@@ -19,6 +22,9 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 - Il freeze export audit è parte dello stato finale del run snapshot, non un side effect fuori banda.
 - Aggiunta query `getSnapshotRunStatus` per polling UI e osservabilità del progresso.
 - `materializationReader.listMaterializableRows` è ora paginata con `cursor` e `batchSize`, per evitare letture monolitiche anche sui namespace letti tramite reader del componente.
+- Aggiunte query `getIndicatorHistory`, `getSnapshotIndicatorSlice`, `getReportWidgetData` e `getReportWidgetsData` per costruire report grafici riusabili nei consumer.
+- `addReportWidget` accetta ora widget persistiti chart-first, inclusi trend storici e pie chart multi-indicatore.
+- Le query runtime orientate alla UI ora normalizzano automaticamente i valori con `indicatorUnit = '%'` moltiplicandoli per `100` nel payload di trasporto, mantenendo invariato il dato grezzo persistito nel database.
 
 ## [1.0.0] - 2026-03-23
 

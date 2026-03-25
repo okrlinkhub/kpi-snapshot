@@ -42,6 +42,7 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 - versioning obbligatorio di indicatori base e derivati tramite coppia logica `slug` + `version`;
 - calcolo di indicatori derivati direttamente nel componente;
 - persistenza di report profile-scoped e widget ordinabili, con `slug` globale univoco per deep-link stabili;
+- widget report di tipo `single_value` e `chart`, con supporto nativo a trend storici e confronti multi-indicatore;
 - persistenza opzionale di `externalId` su `indicators` e `values`;
 - helper client-side `exposeApi(...)` per ridurre il boilerplate nell'app host.
 
@@ -78,10 +79,44 @@ Regole operative:
 - `indicators` e `derivedIndicators` sono versionati: lo stesso `slug` puo` avere piu` versioni nello stesso profilo.
 - le query runtime e i report risolvono sempre l'ultima `version` disponibile per ogni `slug`.
 - ogni report ha uno `slug` globale univoco, così l'host puo` costruire route semplici come `/analytics/report/[slug]` senza includere il profilo nell'URL.
+- `reportWidgets` non e` piu` limitata al vecchio modello `1 widget = 1 indicatore`: un widget puo` contenere `members[]` e dichiarare `widgetType` / `chartKind`.
 - `analyticsExports` distingue:
   - export automatici globali, prodotti da materializzazione o freeze audit;
   - export custom legati opzionalmente a un profilo.
 - L'host non deve mantenere un catalogo runtime parallelo delle source: entita`, scope, row key e campo data vivono nella tabella componente `dataSourceSettings`, mentre `dataSources` salva solo l'istanza concreta scelta dall'admin.
+
+## Widget report chart-first
+
+Il modello report del componente ora distingue due primitive:
+
+- `single_value`: card numerica per un solo indicatore
+- `chart`: widget grafico con `chartKind = line | area | bar | pie`
+
+Campi principali di `reportWidgets`:
+
+- `widgetType`
+- `title`, `description`
+- `layout`
+- `members[]` con riferimenti indicatori profile-scoped
+- `chartKind` e `timeRange` per i widget grafici
+
+Query runtime dedicate:
+
+- `getIndicatorHistory`: storico di un indicatore attraverso gli snapshot
+- `getSnapshotIndicatorSlice`: confronto coerente di piu` indicatori nello stesso snapshot
+- `getReportWidgetData` e `getReportWidgetsData`: adapter pronti per UI/report builder
+
+Normalizzazione valori:
+
+- se `indicatorUnit` e` `%`, le query runtime orientate alla UI (`getIndicatorHistory`, `getSnapshotIndicatorSlice`, `getReportWidgetData`, `getReportWidgetsData`) moltiplicano automaticamente il valore per `100` nel payload di trasporto;
+- i valori persistiti nelle tabelle del componente restano invariati e continuano a rappresentare la frazione grezza, ad esempio `0.3551`;
+- l'host puo` quindi mostrare direttamente `35.51 %` senza dover aggiungere conversioni custom in ogni consumer.
+
+Regole operative:
+
+- i trend leggono gli ultimi `N` snapshot del singolo indicatore, senza assumere un unico snapshot globale del profilo;
+- i pie chart richiedono indicatori dello stesso profilo e li confrontano sullo stesso snapshot coerente;
+- i contatori `reportUsageCount` vengono aggiornati per tutti i `members` del widget, non solo per il caso single KPI.
 
 ## Catalogo persistito schema-driven
 
@@ -412,7 +447,8 @@ Limite importante: `kpi-snapshot` non può inventare da solo metadati come `comp
 Funzioni principali esposte dal helper:
 
 - lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `getSnapshotRunStatus`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
-- report builder: `listReports`, `getReport`, `getReportBySlug`, `createReport`, `archiveReport`, `updateReportMeta`, `addReportWidget`, `removeReportWidget`, `reorderReportWidgets`
+- report builder: `listReports`, `getReport`, `getReportBySlug`, `createReport`, `archiveReport`, `updateReportMeta`, `addReportWidget`, `removeReportWidget`, `reorderReportWidgets`, `getReportWidgetData`, `getReportWidgetsData`
+- chart data: `getIndicatorHistory`, `getSnapshotIndicatorSlice`
 - configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `rebuildIndicatorReportUsageCounters`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `replaceProfileDefinitions`, `toggleCalculation`
 
 Nota migrazione:

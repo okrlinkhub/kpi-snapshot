@@ -2,7 +2,7 @@ import { v } from 'convex/values'
 import { api, internal } from './_generated/api.js'
 import { action, internalAction, internalMutation, internalQuery, mutation, query } from './_generated/server.js'
 import type { Doc, Id } from './_generated/dataModel.js'
-import type { MutationCtx } from './_generated/server.js'
+import type { MutationCtx, QueryCtx } from './_generated/server.js'
 import {
   calculationFiltersValidator,
   normalizeCalculationFilters,
@@ -15,6 +15,13 @@ import {
   isLegacyDerivedFormula,
   listDirectFormulaDependencies,
 } from '../shared/derivedFormula.js'
+import {
+  reportWidgetMemberInputValidator,
+  transportReportWidgetValidator,
+  type AnalyticsReportWidget,
+  type ReportWidgetMember,
+  type ReportWidgetMemberInput,
+} from '../shared/reportWidgets.js'
 import type {
   CalculationFieldRule,
   CalculationFilters,
@@ -2284,13 +2291,15 @@ export const rebuildIndicatorReportUsageCounters = mutation({
         .collect()
 
       for (const widget of widgets) {
-        const key = buildReportUsageKey(
-          widget.indicatorKind,
-          widget.sourceProfileId,
-          widget.indicatorSlug
-        )
-        usageCountByIndicator.set(key, (usageCountByIndicator.get(key) ?? 0) + 1)
-        activeWidgetCount++
+        for (const member of widget.members) {
+          const key = buildReportUsageKey(
+            member.indicatorKind,
+            member.sourceProfileId,
+            member.indicatorSlug
+          )
+          usageCountByIndicator.set(key, (usageCountByIndicator.get(key) ?? 0) + 1)
+          activeWidgetCount++
+        }
       }
     }
 
@@ -3879,6 +3888,453 @@ export const setIntegrationValueExternalId = mutation({
   },
 })
 
+const snapshotIndicatorHistoryPointValidator = v.object({
+  snapshotId: v.string(),
+  snapshotAt: v.union(v.number(), v.null()),
+  computedAt: v.number(),
+  value: v.union(v.number(), v.null()),
+  recordedValue: v.union(v.number(), v.null()),
+  isStaleInactive: v.boolean(),
+  staleReason: v.union(
+    v.literal('indicator_disabled'),
+    v.literal('operand_disabled'),
+    v.null()
+  ),
+})
+
+const snapshotIndicatorHistoryValidator = v.object({
+  profileSlug: v.string(),
+  indicatorSlug: v.string(),
+  indicatorKind: v.union(v.literal('base'), v.literal('derived')),
+  indicatorLabel: v.string(),
+  indicatorUnit: v.union(v.string(), v.null()),
+  points: v.array(snapshotIndicatorHistoryPointValidator),
+})
+
+const snapshotIndicatorSliceItemValidator = v.object({
+  memberKey: v.string(),
+  sourceProfileSlug: v.string(),
+  indicatorSlug: v.string(),
+  indicatorKind: v.union(v.literal('base'), v.literal('derived')),
+  indicatorLabel: v.string(),
+  indicatorUnit: v.union(v.string(), v.null()),
+  value: v.union(v.number(), v.null()),
+  recordedValue: v.union(v.number(), v.null()),
+  snapshotId: v.union(v.string(), v.null()),
+  snapshotAt: v.union(v.number(), v.null()),
+  computedAt: v.union(v.number(), v.null()),
+  isStaleInactive: v.boolean(),
+  staleReason: v.union(
+    v.literal('indicator_disabled'),
+    v.literal('operand_disabled'),
+    v.null()
+  ),
+})
+
+const snapshotIndicatorSliceValidator = v.object({
+  snapshotId: v.union(v.string(), v.null()),
+  snapshotAt: v.union(v.number(), v.null()),
+  items: v.array(snapshotIndicatorSliceItemValidator),
+})
+
+function buildReportWidgetMemberKey (member: Pick<ReportWidgetMemberInput, 'sourceProfileSlug' | 'indicatorKind' | 'indicatorSlug'>) {
+  return `${member.sourceProfileSlug}:${member.indicatorKind}:${member.indicatorSlug}`
+}
+
+function normalizeReportMemberLabel (member: ReportWidgetMemberInput, fallbackLabel: string) {
+  const normalized = member.indicatorLabel?.trim()
+  return normalized || fallbackLabel
+}
+
+function normalizeReportMemberUnit (member: ReportWidgetMemberInput, fallbackUnit?: string | null) {
+  const normalized = member.indicatorUnit?.trim()
+  return normalized || fallbackUnit || null
+}
+
+function shouldNormalizePercentUnit (unit?: string | null) {
+  return unit?.trim() === '%'
+}
+
+function normalizeTransportValue (value: number | null, unit?: string | null) {
+  if (value === null) {
+    return null
+  }
+
+  return shouldNormalizePercentUnit(unit) ? value * 100 : value
+}
+
+async function resolveReportWidgetMemberReference (
+  ctx: QueryCtx,
+  member: ReportWidgetMemberInput | ReportWidgetMember
+) {
+  const profile = await getProfileBySlug(ctx, member.sourceProfileSlug)
+
+  if (member.indicatorKind === 'base') {
+    const indicator = await getIndicatorByProfileAndSlug(ctx, profile._id, member.indicatorSlug)
+    if (!indicator) {
+      throw new Error(`Indicatore '${member.indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+    }
+
+    return {
+      member: {
+        sourceProfileId: profile._id,
+        sourceProfileSlug: profile.slug,
+        indicatorSlug: indicator.slug,
+        indicatorLabel: normalizeReportMemberLabel(member, indicator.label),
+        indicatorUnit: normalizeReportMemberUnit(member, indicator.unit),
+        indicatorKind: 'base' as const,
+      },
+      indicator,
+      profile,
+      isStaleInactive: !indicator.enabled,
+      staleReason: !indicator.enabled ? 'indicator_disabled' as const : null,
+    }
+  }
+
+  const derivedIndicator = await getDerivedIndicatorByProfileAndSlug(ctx, profile._id, member.indicatorSlug)
+  if (!derivedIndicator) {
+    throw new Error(`Indicatore derivato '${member.indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+  }
+
+  const [allIndicators, allDerivedIndicators] = await Promise.all([
+    ctx.db.query('indicators').withIndex('by_profile', (q: any) => q.eq('profileId', profile._id)).collect(),
+    ctx.db.query('derivedIndicators').withIndex('by_profile', (q: any) => q.eq('profileId', profile._id)).collect(),
+  ])
+  const indicators: Array<Doc<'indicators'>> = listLatestRowsBySlug(allIndicators)
+  const derivedIndicators: Array<Doc<'derivedIndicators'>> = listLatestRowsBySlug(allDerivedIndicators)
+  const hasInactiveOperands = hasInactiveDerivedOperands(
+    derivedIndicator.formula,
+    buildIndicatorsBySlug(indicators),
+    buildLatestRowsBySlug(derivedIndicators)
+  )
+  const isStaleInactive = !derivedIndicator.enabled || hasInactiveOperands
+
+  return {
+    member: {
+      sourceProfileId: profile._id,
+      sourceProfileSlug: profile.slug,
+      indicatorSlug: derivedIndicator.slug,
+      indicatorLabel: normalizeReportMemberLabel(member, derivedIndicator.label),
+      indicatorUnit: normalizeReportMemberUnit(member, derivedIndicator.unit),
+      indicatorKind: 'derived' as const,
+    },
+    indicator: derivedIndicator,
+    profile,
+    isStaleInactive,
+    staleReason: !derivedIndicator.enabled
+      ? 'indicator_disabled' as const
+      : hasInactiveOperands
+        ? 'operand_disabled' as const
+        : null,
+  }
+}
+
+async function getLatestSnapshotIdForProfile (ctx: QueryCtx, profileSlug: string) {
+  const profile = await getProfileBySlug(ctx, profileSlug)
+  const rows = await ctx.db
+    .query('snapshots')
+    .withIndex('by_profile_and_snapshot_at', (q: any) => q.eq('profileId', profile._id))
+    .order('desc')
+    .take(1)
+
+  return rows[0] ? String(rows[0]._id) : null
+}
+
+async function buildIndicatorHistoryData (
+  ctx: QueryCtx,
+  member: ReportWidgetMemberInput | ReportWidgetMember,
+  limit?: number
+) {
+  const resolvedMember = await resolveReportWidgetMemberReference(ctx, member)
+  const boundedLimit = limit ?? 12
+  const indicatorUnit = resolvedMember.member.indicatorUnit ?? null
+
+  if (!Number.isInteger(boundedLimit) || boundedLimit < 2 || boundedLimit > 36) {
+    throw new Error('Il limite della history deve essere un intero tra 2 e 36')
+  }
+
+  if (resolvedMember.member.indicatorKind === 'base') {
+    const rows = await ctx.db
+      .query('snapshotValues')
+      .withIndex('by_indicator_and_snapshot_at', (q: any) => q.eq('indicatorId', resolvedMember.indicator._id as Id<'indicators'>))
+      .order('desc')
+      .take(boundedLimit)
+
+    const points = rows
+      .filter((row) => row.profileId === resolvedMember.profile._id)
+      .map((row) => ({
+        snapshotId: String(row.snapshotId),
+        snapshotAt: row.snapshotAt ?? null,
+        computedAt: row.computedAt,
+        value: resolvedMember.isStaleInactive ? null : normalizeTransportValue(row.value, indicatorUnit),
+        recordedValue: normalizeTransportValue(row.value, indicatorUnit),
+        isStaleInactive: resolvedMember.isStaleInactive,
+        staleReason: resolvedMember.staleReason,
+      }))
+      .sort((left, right) => (
+        (left.snapshotAt ?? left.computedAt) - (right.snapshotAt ?? right.computedAt)
+      ))
+
+    return {
+      profileSlug: resolvedMember.member.sourceProfileSlug,
+      indicatorSlug: resolvedMember.member.indicatorSlug,
+      indicatorKind: resolvedMember.member.indicatorKind,
+      indicatorLabel: resolvedMember.member.indicatorLabel,
+      indicatorUnit,
+      points,
+    }
+  }
+
+  const rows = await ctx.db
+    .query('derivedSnapshotValues')
+    .withIndex('by_derived_indicator_and_snapshot_at', (q: any) => q.eq('derivedIndicatorId', resolvedMember.indicator._id as Id<'derivedIndicators'>))
+    .order('desc')
+    .take(boundedLimit)
+
+  const points = rows
+    .filter((row) => row.profileId === resolvedMember.profile._id)
+    .map((row) => ({
+      snapshotId: String(row.snapshotId),
+      snapshotAt: row.snapshotAt ?? null,
+      computedAt: row.computedAt,
+      value: resolvedMember.isStaleInactive ? null : normalizeTransportValue(row.value, indicatorUnit),
+      recordedValue: normalizeTransportValue(row.value, indicatorUnit),
+      isStaleInactive: resolvedMember.isStaleInactive,
+      staleReason: resolvedMember.staleReason,
+    }))
+    .sort((left, right) => (
+      (left.snapshotAt ?? left.computedAt) - (right.snapshotAt ?? right.computedAt)
+    ))
+
+  return {
+    profileSlug: resolvedMember.member.sourceProfileSlug,
+    indicatorSlug: resolvedMember.member.indicatorSlug,
+    indicatorKind: resolvedMember.member.indicatorKind,
+    indicatorLabel: resolvedMember.member.indicatorLabel,
+    indicatorUnit,
+    points,
+  }
+}
+
+async function buildSnapshotIndicatorSliceData (
+  ctx: QueryCtx,
+  args: {
+    snapshotId?: string
+    profileSlug?: string
+    members: Array<ReportWidgetMemberInput | ReportWidgetMember>
+  }
+) {
+  const resolvedMembers = await Promise.all(args.members.map(async (member) => {
+    return await resolveReportWidgetMemberReference(ctx, member)
+  }))
+
+  let snapshotId = args.snapshotId ?? null
+  if (!snapshotId) {
+    const fallbackProfileSlug = args.profileSlug ?? resolvedMembers[0]?.member.sourceProfileSlug
+    if (!fallbackProfileSlug) {
+      throw new Error('Impossibile determinare lo snapshot di riferimento')
+    }
+    snapshotId = await getLatestSnapshotIdForProfile(ctx, fallbackProfileSlug)
+  }
+
+  const snapshot = snapshotId
+    ? await ctx.db.get(snapshotId as Id<'snapshots'>)
+    : null
+
+  const items = await Promise.all(resolvedMembers.map(async (resolvedMember) => {
+    const indicatorUnit = resolvedMember.member.indicatorUnit ?? null
+
+    if (!snapshotId || !snapshot) {
+      return {
+        memberKey: buildReportWidgetMemberKey(resolvedMember.member),
+        sourceProfileSlug: resolvedMember.member.sourceProfileSlug,
+        indicatorSlug: resolvedMember.member.indicatorSlug,
+        indicatorKind: resolvedMember.member.indicatorKind,
+        indicatorLabel: resolvedMember.member.indicatorLabel,
+        indicatorUnit,
+        value: null,
+        recordedValue: null,
+        snapshotId: null,
+        snapshotAt: null,
+        computedAt: null,
+        isStaleInactive: resolvedMember.isStaleInactive,
+        staleReason: resolvedMember.staleReason,
+      }
+    }
+
+    if (resolvedMember.member.indicatorKind === 'base') {
+      const row = await ctx.db
+        .query('snapshotValues')
+        .withIndex('by_snapshot_and_indicator', (q: any) => (
+          q.eq('snapshotId', snapshot._id).eq('indicatorId', resolvedMember.indicator._id as Id<'indicators'>)
+        ))
+        .unique()
+
+      return {
+        memberKey: buildReportWidgetMemberKey(resolvedMember.member),
+        sourceProfileSlug: resolvedMember.member.sourceProfileSlug,
+        indicatorSlug: resolvedMember.member.indicatorSlug,
+        indicatorKind: resolvedMember.member.indicatorKind,
+        indicatorLabel: resolvedMember.member.indicatorLabel,
+        indicatorUnit,
+        value: row && !resolvedMember.isStaleInactive
+          ? normalizeTransportValue(row.value, indicatorUnit)
+          : null,
+        recordedValue: normalizeTransportValue(row?.value ?? null, indicatorUnit),
+        snapshotId: row ? String(row.snapshotId) : String(snapshot._id),
+        snapshotAt: row?.snapshotAt ?? snapshot.snapshotAt ?? null,
+        computedAt: row?.computedAt ?? null,
+        isStaleInactive: resolvedMember.isStaleInactive,
+        staleReason: resolvedMember.staleReason,
+      }
+    }
+
+    const row = await ctx.db
+      .query('derivedSnapshotValues')
+      .withIndex('by_snapshot_and_slug', (q: any) => (
+        q.eq('snapshotId', snapshot._id).eq('derivedIndicatorSlug', resolvedMember.member.indicatorSlug)
+      ))
+      .unique()
+
+    return {
+      memberKey: buildReportWidgetMemberKey(resolvedMember.member),
+      sourceProfileSlug: resolvedMember.member.sourceProfileSlug,
+      indicatorSlug: resolvedMember.member.indicatorSlug,
+      indicatorKind: resolvedMember.member.indicatorKind,
+      indicatorLabel: resolvedMember.member.indicatorLabel,
+      indicatorUnit,
+      value: row && !resolvedMember.isStaleInactive
+        ? normalizeTransportValue(row.value, indicatorUnit)
+        : null,
+      recordedValue: normalizeTransportValue(row?.value ?? null, indicatorUnit),
+      snapshotId: row ? String(row.snapshotId) : String(snapshot._id),
+      snapshotAt: row?.snapshotAt ?? snapshot.snapshotAt ?? null,
+      computedAt: row?.computedAt ?? null,
+      isStaleInactive: resolvedMember.isStaleInactive,
+      staleReason: resolvedMember.staleReason,
+    }
+  }))
+
+  return {
+    snapshotId: snapshot ? String(snapshot._id) : null,
+    snapshotAt: snapshot?.snapshotAt ?? null,
+    items,
+  }
+}
+
+function buildTimelineFromHistories (
+  histories: Array<Awaited<ReturnType<typeof buildIndicatorHistoryData>>>
+) {
+  const pointMap = new Map<number, {
+    timestamp: number
+    snapshotId: string
+    values: Array<{
+      memberKey: string
+      label: string
+      unit: string | null
+      value: number | null
+      recordedValue: number | null
+    }>
+  }>()
+
+  for (const history of histories) {
+    const memberKey = buildReportWidgetMemberKey({
+      sourceProfileSlug: history.profileSlug,
+      indicatorKind: history.indicatorKind,
+      indicatorSlug: history.indicatorSlug,
+    })
+
+    for (const point of history.points) {
+      const timestamp = point.snapshotAt ?? point.computedAt
+      const current: {
+        timestamp: number
+        snapshotId: string
+        values: Array<{
+          memberKey: string
+          label: string
+          unit: string | null
+          value: number | null
+          recordedValue: number | null
+        }>
+      } = pointMap.get(timestamp) ?? {
+        timestamp,
+        snapshotId: point.snapshotId,
+        values: [],
+      }
+
+      current.values.push({
+        memberKey,
+        label: history.indicatorLabel,
+        unit: history.indicatorUnit,
+        value: point.value,
+        recordedValue: point.recordedValue,
+      })
+      pointMap.set(timestamp, current)
+    }
+  }
+
+  return [...pointMap.values()].sort((left, right) => left.timestamp - right.timestamp)
+}
+
+async function buildReportWidgetData (
+  ctx: QueryCtx,
+  widget: AnalyticsReportWidget
+) {
+  const baseData = {
+    widgetId: String(widget._id),
+    widgetType: widget.widgetType,
+    title: widget.title,
+    description: widget.description ?? null,
+    layout: widget.layout ?? null,
+  }
+
+  if (widget.widgetType === 'single_value') {
+    const slice = await buildSnapshotIndicatorSliceData(ctx, {
+      profileSlug: widget.members[0]?.sourceProfileSlug,
+      members: widget.members,
+    })
+
+    return {
+      ...baseData,
+      member: slice.items[0] ?? null,
+    }
+  }
+
+  if (widget.chartKind === 'pie') {
+    const slice = await buildSnapshotIndicatorSliceData(ctx, {
+      profileSlug: widget.members[0]?.sourceProfileSlug,
+      members: widget.members,
+    })
+
+    return {
+      ...baseData,
+      chartKind: widget.chartKind,
+      slice,
+    }
+  }
+
+  const histories = await Promise.all(widget.members.map(async (member) => {
+    return await buildIndicatorHistoryData(ctx, member, widget.timeRange?.limit)
+  }))
+
+  return {
+    ...baseData,
+    chartKind: widget.chartKind,
+    timeline: {
+      series: histories.map((history) => ({
+        memberKey: buildReportWidgetMemberKey({
+          sourceProfileSlug: history.profileSlug,
+          indicatorKind: history.indicatorKind,
+          indicatorSlug: history.indicatorSlug,
+        }),
+        label: history.indicatorLabel,
+        unit: history.indicatorUnit,
+      })),
+      points: buildTimelineFromHistories(histories),
+    },
+  }
+}
+
 export const listSnapshots = query({
   args: {
     profileSlug: v.optional(v.string()),
@@ -3896,6 +4352,58 @@ export const listSnapshots = query({
       .withIndex('by_profile_and_snapshot_at', (q) => q.eq('profileId', profile._id))
       .order('desc')
       .take(limit)
+  },
+})
+
+export const getIndicatorHistory = query({
+  args: {
+    profileSlug: v.string(),
+    indicatorSlug: v.string(),
+    indicatorKind: v.union(v.literal('base'), v.literal('derived')),
+    limit: v.optional(v.number()),
+  },
+  returns: snapshotIndicatorHistoryValidator,
+  handler: async (ctx, args) => {
+    return await buildIndicatorHistoryData(ctx, {
+      sourceProfileSlug: args.profileSlug,
+      indicatorSlug: args.indicatorSlug,
+      indicatorLabel: args.indicatorSlug,
+      indicatorKind: args.indicatorKind,
+    }, args.limit)
+  },
+})
+
+export const getSnapshotIndicatorSlice = query({
+  args: {
+    profileSlug: v.optional(v.string()),
+    snapshotId: v.optional(v.string()),
+    members: v.array(reportWidgetMemberInputValidator),
+  },
+  returns: snapshotIndicatorSliceValidator,
+  handler: async (ctx, args) => {
+    return await buildSnapshotIndicatorSliceData(ctx, args)
+  },
+})
+
+export const getReportWidgetData = query({
+  args: {
+    widget: transportReportWidgetValidator,
+  },
+  returns: v.any(),
+  handler: async (ctx, args) => {
+    return await buildReportWidgetData(ctx, args.widget as AnalyticsReportWidget)
+  },
+})
+
+export const getReportWidgetsData = query({
+  args: {
+    widgets: v.array(transportReportWidgetValidator),
+  },
+  returns: v.array(v.any()),
+  handler: async (ctx, args) => {
+    return await Promise.all(args.widgets.map(async (widget) => {
+      return await buildReportWidgetData(ctx, widget as AnalyticsReportWidget)
+    }))
   },
 })
 

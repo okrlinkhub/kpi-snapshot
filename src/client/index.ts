@@ -17,6 +17,13 @@ import { v } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
 import { calculationFiltersValidator } from "../component/lib/calculationFilters.js";
 import { derivedFormulaValidator } from "../shared/derivedFormula.js";
+import {
+  createReportWidgetArgsValidator,
+  reportWidgetMemberInputValidator,
+  transportReportWidgetValidator,
+  type AnalyticsReportWidget,
+  type ReportWidgetLayout,
+} from "../shared/reportWidgets.js";
 
 export type { ComponentApi } from "../component/_generated/component.js";
 
@@ -34,24 +41,112 @@ export type AnalyticsReportSummary = {
   updatedAt: number
 }
 
-export type AnalyticsReportWidget = {
-  _id: string
-  reportId: string
-  sourceProfileId: string
-  sourceProfileSlug: string
-  indicatorSlug: string
-  indicatorLabel: string
-  indicatorUnit?: string
-  indicatorKind: "base" | "derived"
-  order: number
-  createdAt: number
-  updatedAt?: number
-}
+export type {
+  AnalyticsReportWidget,
+  ChartReportWidget,
+  CreateChartReportWidgetArgs,
+  CreateReportWidgetArgs,
+  CreateSingleValueReportWidgetArgs,
+  ReportWidgetChartKind,
+  ReportWidgetIndicatorKind,
+  ReportWidgetLayout,
+  ReportWidgetMember,
+  ReportWidgetMemberInput,
+  ReportWidgetTimeRange,
+  ReportWidgetType,
+  SingleValueReportWidget,
+} from "../shared/reportWidgets.js";
 
 export type AnalyticsReportDetail = {
   report: AnalyticsReportSummary
   widgets: AnalyticsReportWidget[]
 }
+
+export type IndicatorHistoryPoint = {
+  snapshotId: string
+  snapshotAt: number | null
+  computedAt: number
+  value: number | null
+  recordedValue: number | null
+  isStaleInactive: boolean
+  staleReason: 'indicator_disabled' | 'operand_disabled' | null
+}
+
+export type IndicatorHistory = {
+  profileSlug: string
+  indicatorSlug: string
+  indicatorKind: 'base' | 'derived'
+  indicatorLabel: string
+  indicatorUnit: string | null
+  points: IndicatorHistoryPoint[]
+}
+
+export type SnapshotIndicatorSliceItem = {
+  memberKey: string
+  sourceProfileSlug: string
+  indicatorSlug: string
+  indicatorKind: 'base' | 'derived'
+  indicatorLabel: string
+  indicatorUnit: string | null
+  value: number | null
+  recordedValue: number | null
+  snapshotId: string | null
+  snapshotAt: number | null
+  computedAt: number | null
+  isStaleInactive: boolean
+  staleReason: 'indicator_disabled' | 'operand_disabled' | null
+}
+
+export type SnapshotIndicatorSlice = {
+  snapshotId: string | null
+  snapshotAt: number | null
+  items: SnapshotIndicatorSliceItem[]
+}
+
+export type AnalyticsReportWidgetData =
+  | {
+      widgetId: string
+      widgetType: 'single_value'
+      title: string
+      description: string | null
+      layout: ReportWidgetLayout | null
+      member: SnapshotIndicatorSliceItem | null
+    }
+  | {
+      widgetId: string
+      widgetType: 'chart'
+      chartKind: 'pie'
+      title: string
+      description: string | null
+      layout: ReportWidgetLayout | null
+      slice: SnapshotIndicatorSlice
+    }
+  | {
+      widgetId: string
+      widgetType: 'chart'
+      chartKind: 'line' | 'area' | 'bar'
+      title: string
+      description: string | null
+      layout: ReportWidgetLayout | null
+      timeline: {
+        series: Array<{
+          memberKey: string
+          label: string
+          unit: string | null
+        }>
+        points: Array<{
+          timestamp: number
+          snapshotId: string
+          values: Array<{
+            memberKey: string
+            label: string
+            unit: string | null
+            value: number | null
+            recordedValue: number | null
+          }>
+        }>
+      }
+    }
 
 const periodicityValidator = v.union(
   v.literal("weekly"),
@@ -342,6 +437,59 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    getIndicatorHistory: queryGeneric({
+      args: {
+        profileSlug: v.string(),
+        indicatorSlug: v.string(),
+        indicatorKind: v.union(v.literal("base"), v.literal("derived")),
+        limit: v.optional(v.number()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotValue" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getIndicatorHistory, args);
+      },
+    }),
+
+    getSnapshotIndicatorSlice: queryGeneric({
+      args: {
+        profileSlug: v.optional(v.string()),
+        snapshotId: v.optional(v.string()),
+        members: v.array(reportWidgetMemberInputValidator),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotValue" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getSnapshotIndicatorSlice, args);
+      },
+    }),
+
+    getReportWidgetData: queryGeneric({
+      args: {
+        widget: transportReportWidgetValidator,
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getReportWidgetData, args);
+      },
+    }),
+
+    getReportWidgetsData: queryGeneric({
+      args: {
+        widgets: v.array(transportReportWidgetValidator),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "report" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getReportWidgetsData, args);
+      },
+    }),
+
     getSnapshotValueEvidenceDownloadUrl: queryGeneric({
       args: { snapshotValueId: v.string() },
       handler: async (ctx, args) => {
@@ -437,14 +585,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
     }),
 
     addReportWidget: mutationGeneric({
-      args: {
-        reportId: v.string(),
-        sourceProfileSlug: v.string(),
-        indicatorSlug: v.string(),
-        indicatorLabel: v.string(),
-        indicatorUnit: v.optional(v.string()),
-        indicatorKind: v.union(v.literal("base"), v.literal("derived")),
-      },
+      args: createReportWidgetArgsValidator,
       handler: async (ctx, args) => {
         if (options?.auth) {
           await options.auth(ctx, { type: "update", entityType: "report" });

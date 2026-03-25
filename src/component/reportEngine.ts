@@ -1,11 +1,16 @@
 import { v } from 'convex/values'
 import { mutation, query, type MutationCtx, type QueryCtx } from './_generated/server.js'
 import type { Doc, Id } from './_generated/dataModel.js'
-
-const reportWidgetKindValidator = v.union(
-  v.literal('base'),
-  v.literal('derived')
-)
+import {
+  createReportWidgetArgsValidator,
+  storedReportWidgetValidator,
+  type CreateChartReportWidgetArgs,
+  type CreateReportWidgetArgs,
+  type CreateSingleValueReportWidgetArgs,
+  type ReportWidgetLayout,
+  type ReportWidgetMember,
+  type ReportWidgetMemberInput,
+} from '../shared/reportWidgets.js'
 
 const reportSummaryValidator = v.object({
   _id: v.id('reports'),
@@ -20,21 +25,6 @@ const reportSummaryValidator = v.object({
   updatedByKey: v.optional(v.string()),
   createdAt: v.number(),
   updatedAt: v.number(),
-})
-
-const reportWidgetValidator = v.object({
-  _id: v.id('reportWidgets'),
-  _creationTime: v.number(),
-  reportId: v.id('reports'),
-  sourceProfileId: v.id('snapshotProfiles'),
-  sourceProfileSlug: v.string(),
-  indicatorSlug: v.string(),
-  indicatorLabel: v.string(),
-  indicatorUnit: v.optional(v.string()),
-  indicatorKind: reportWidgetKindValidator,
-  order: v.number(),
-  createdAt: v.number(),
-  updatedAt: v.optional(v.number()),
 })
 
 function normalizeOptionalString (value?: string) {
@@ -144,36 +134,210 @@ async function getDerivedIndicatorByProfileAndSlug (
   return rows[0] ?? null
 }
 
-async function assertReportWidgetIndicatorExists (
-  ctx: QueryCtx | MutationCtx,
-  sourceProfileId: Id<'snapshotProfiles'>,
-  indicatorKind: 'base' | 'derived',
-  indicatorSlug: string
+function buildDefaultWidgetLayout (args: CreateReportWidgetArgs): ReportWidgetLayout {
+  if (args.widgetType === 'single_value') {
+    return {
+      width: 'compact',
+      height: 'sm',
+      emphasis: 'default',
+    }
+  }
+
+  return {
+    width: args.chartKind === 'pie' ? 'wide' : 'full',
+    height: args.chartKind === 'pie' ? 'md' : 'lg',
+    emphasis: args.chartKind === 'pie' ? 'accent' : 'default',
+  }
+}
+
+function normalizeReportWidgetLayout (
+  args: CreateReportWidgetArgs
 ) {
-  if (indicatorKind === 'base') {
-    const indicator = await getBaseIndicatorByProfileAndSlug(ctx, sourceProfileId, indicatorSlug)
+  return args.layout ?? buildDefaultWidgetLayout(args)
+}
+
+function normalizeReportWidgetTitle (
+  args: CreateSingleValueReportWidgetArgs | CreateChartReportWidgetArgs,
+  members: ReportWidgetMember[]
+) {
+  const explicitTitle = normalizeOptionalString(args.title)
+  if (explicitTitle) {
+    return explicitTitle
+  }
+
+  if (args.widgetType === 'single_value') {
+    return members[0]?.indicatorLabel ?? 'KPI'
+  }
+
+  if (args.chartKind === 'pie') {
+    return 'Confronto indicatori'
+  }
+
+  if (members.length === 1) {
+    return `${members[0].indicatorLabel} nel tempo`
+  }
+
+  return 'Trend indicatori'
+}
+
+function assertValidTimeRange (limit?: number) {
+  if (limit === undefined) {
+    return
+  }
+
+  if (!Number.isInteger(limit) || limit < 2 || limit > 36) {
+    throw new Error('Il time range dei widget trend deve avere un limite intero tra 2 e 36 snapshot')
+  }
+}
+
+function assertUniqueMembers (members: ReportWidgetMember[]) {
+  const keys = new Set<string>()
+  for (const member of members) {
+    const key = `${member.sourceProfileSlug}:${member.indicatorKind}:${member.indicatorSlug}`
+    if (keys.has(key)) {
+      throw new Error(`Indicatore duplicato nel widget: ${member.indicatorLabel}`)
+    }
+    keys.add(key)
+  }
+}
+
+async function resolveReportWidgetMember (
+  ctx: QueryCtx | MutationCtx,
+  member: ReportWidgetMemberInput
+) {
+  const sourceProfile = await getProfileBySlug(ctx, member.sourceProfileSlug)
+
+  if (member.indicatorKind === 'base') {
+    const indicator = await getBaseIndicatorByProfileAndSlug(ctx, sourceProfile._id, member.indicatorSlug)
     if (!indicator) {
-      throw new Error(`Indicatore '${indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+      throw new Error(`Indicatore '${member.indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+    }
+
+    return {
+      sourceProfileId: sourceProfile._id,
+      sourceProfileSlug: sourceProfile.slug,
+      indicatorSlug: indicator.slug,
+      indicatorLabel: normalizeOptionalString(member.indicatorLabel) ?? indicator.label,
+      indicatorUnit: normalizeOptionalString(member.indicatorUnit) ?? normalizeOptionalString(indicator.unit),
+      indicatorKind: 'base' as const,
+    }
+  }
+
+  const derivedIndicator = await getDerivedIndicatorByProfileAndSlug(ctx, sourceProfile._id, member.indicatorSlug)
+  if (!derivedIndicator) {
+    throw new Error(`Indicatore derivato '${member.indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+  }
+
+  return {
+    sourceProfileId: sourceProfile._id,
+    sourceProfileSlug: sourceProfile.slug,
+    indicatorSlug: derivedIndicator.slug,
+    indicatorLabel: normalizeOptionalString(member.indicatorLabel) ?? derivedIndicator.label,
+    indicatorUnit: normalizeOptionalString(member.indicatorUnit) ?? normalizeOptionalString(derivedIndicator.unit),
+    indicatorKind: 'derived' as const,
+  }
+}
+
+async function resolveReportWidgetMembers (
+  ctx: QueryCtx | MutationCtx,
+  members: ReportWidgetMemberInput[]
+) {
+  const resolvedMembers = await Promise.all(members.map(async (member) => {
+    return await resolveReportWidgetMember(ctx, member)
+  }))
+
+  assertUniqueMembers(resolvedMembers)
+  return resolvedMembers
+}
+
+function assertCreateWidgetArgs (
+  args: CreateReportWidgetArgs,
+  members: ReportWidgetMember[]
+) {
+  if (args.widgetType === 'single_value') {
+    if (members.length !== 1) {
+      throw new Error('I widget KPI devono avere esattamente un indicatore')
     }
     return
   }
 
-  const derivedIndicator = await getDerivedIndicatorByProfileAndSlug(ctx, sourceProfileId, indicatorSlug)
-  if (!derivedIndicator) {
-    throw new Error(`Indicatore derivato '${indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+  if (members.length === 0) {
+    throw new Error('Seleziona almeno un indicatore per il grafico')
+  }
+
+  if (members.length > 8) {
+    throw new Error('Ogni grafico puo` contenere al massimo 8 indicatori')
+  }
+
+  if (args.chartKind === 'pie') {
+    if (members.length < 2) {
+      throw new Error('I grafici a torta richiedono almeno 2 indicatori')
+    }
+    const profileSlugs = new Set(members.map((member) => member.sourceProfileSlug))
+    if (profileSlugs.size > 1) {
+      throw new Error('I grafici a torta richiedono indicatori dello stesso profilo')
+    }
+    if (args.timeRange) {
+      throw new Error('I grafici a torta non supportano un time range storico')
+    }
+    return
+  }
+
+  assertValidTimeRange(args.timeRange?.limit)
+}
+
+function parseCreateReportWidgetArgs (args: {
+  reportId: Id<'reports'>
+  widgetType: 'single_value' | 'chart'
+  title?: string
+  description?: string
+  layout?: ReportWidgetLayout
+  member?: ReportWidgetMemberInput
+  chartKind?: 'line' | 'area' | 'bar' | 'pie'
+  timeRange?: { mode: 'latest_n_snapshots', limit: number }
+  members?: ReportWidgetMemberInput[]
+}): CreateReportWidgetArgs {
+  if (args.widgetType === 'single_value') {
+    if (!args.member) {
+      throw new Error('I widget KPI richiedono un indicatore')
+    }
+
+    return {
+      reportId: args.reportId,
+      widgetType: 'single_value',
+      title: args.title,
+      description: args.description,
+      layout: args.layout,
+      member: args.member,
+    }
+  }
+
+  if (!args.chartKind) {
+    throw new Error('Specifica il tipo di grafico da creare')
+  }
+
+  return {
+    reportId: args.reportId,
+    widgetType: 'chart',
+    chartKind: args.chartKind,
+    title: args.title,
+    description: args.description,
+    layout: args.layout,
+    timeRange: args.timeRange,
+    members: args.members ?? [],
   }
 }
 
-async function adjustReportWidgetUsageCounter (
+async function adjustReportWidgetMemberUsageCounter (
   ctx: MutationCtx,
-  widget: Pick<Doc<'reportWidgets'>, 'sourceProfileId' | 'indicatorKind' | 'indicatorSlug'>,
+  member: ReportWidgetMember,
   delta: 1 | -1
 ) {
-  if (widget.indicatorKind === 'base') {
+  if (member.indicatorKind === 'base') {
     const indicator = await getBaseIndicatorByProfileAndSlug(
       ctx,
-      widget.sourceProfileId,
-      widget.indicatorSlug
+      member.sourceProfileId as Id<'snapshotProfiles'>,
+      member.indicatorSlug
     )
     if (!indicator) {
       return
@@ -188,8 +352,8 @@ async function adjustReportWidgetUsageCounter (
 
   const derivedIndicator = await getDerivedIndicatorByProfileAndSlug(
     ctx,
-    widget.sourceProfileId,
-    widget.indicatorSlug
+    member.sourceProfileId as Id<'snapshotProfiles'>,
+    member.indicatorSlug
   )
   if (!derivedIndicator) {
     return
@@ -199,6 +363,16 @@ async function adjustReportWidgetUsageCounter (
     reportUsageCount: Math.max(0, normalizeReportUsageCount(derivedIndicator.reportUsageCount) + delta),
     updatedAt: Date.now(),
   })
+}
+
+async function adjustReportWidgetUsageCounter (
+  ctx: MutationCtx,
+  widget: Pick<Doc<'reportWidgets'>, 'members'>,
+  delta: 1 | -1
+) {
+  for (const member of widget.members) {
+    await adjustReportWidgetMemberUsageCounter(ctx, member as ReportWidgetMember, delta)
+  }
 }
 
 async function adjustReportWidgetsUsageCounter (
@@ -281,7 +455,7 @@ export const getReport = query({
   },
   returns: v.union(v.object({
     report: reportSummaryValidator,
-    widgets: v.array(reportWidgetValidator),
+    widgets: v.array(storedReportWidgetValidator),
   }), v.null()),
   handler: async (ctx, args) => {
     const report = await ctx.db.get(args.reportId)
@@ -299,7 +473,7 @@ export const getReportBySlug = query({
   },
   returns: v.union(v.object({
     report: reportSummaryValidator,
-    widgets: v.array(reportWidgetValidator),
+    widgets: v.array(storedReportWidgetValidator),
   }), v.null()),
   handler: async (ctx, args) => {
     const report = await ctx.db
@@ -421,50 +595,16 @@ export const updateReportMeta = mutation({
 })
 
 export const addReportWidget = mutation({
-  args: {
-    reportId: v.id('reports'),
-    sourceProfileSlug: v.string(),
-    indicatorSlug: v.string(),
-    indicatorLabel: v.string(),
-    indicatorUnit: v.optional(v.string()),
-    indicatorKind: reportWidgetKindValidator,
-  },
+  args: createReportWidgetArgsValidator,
   returns: v.id('reportWidgets'),
   handler: async (ctx, args) => {
-    const report = await getReportOrThrow(ctx, args.reportId)
-    const sourceProfile = await getProfileBySlug(ctx, args.sourceProfileSlug)
+    const parsedArgs = parseCreateReportWidgetArgs(args)
+    const report = await getReportOrThrow(ctx, parsedArgs.reportId as Id<'reports'>)
+    const members = parsedArgs.widgetType === 'single_value'
+      ? [await resolveReportWidgetMember(ctx, parsedArgs.member)]
+      : await resolveReportWidgetMembers(ctx, parsedArgs.members)
 
-    await assertReportWidgetIndicatorExists(
-      ctx,
-      sourceProfile._id,
-      args.indicatorKind,
-      args.indicatorSlug
-    )
-
-    const existingWidget = await ctx.db
-      .query('reportWidgets')
-      .withIndex('by_report_and_kind_and_source_profile_and_slug', (q) =>
-        q
-          .eq('reportId', report._id)
-          .eq('indicatorKind', args.indicatorKind)
-          .eq('sourceProfileId', sourceProfile._id)
-          .eq('indicatorSlug', args.indicatorSlug)
-      )
-      .unique()
-
-    if (existingWidget) {
-      await ctx.db.patch(existingWidget._id, {
-        sourceProfileId: sourceProfile._id,
-        sourceProfileSlug: sourceProfile.slug,
-        indicatorLabel: args.indicatorLabel,
-        indicatorUnit: normalizeOptionalString(args.indicatorUnit),
-        updatedAt: Date.now(),
-      })
-      await ctx.db.patch(report._id, {
-        updatedAt: Date.now(),
-      })
-      return existingWidget._id
-    }
+    assertCreateWidgetArgs(parsedArgs, members)
 
     const lastWidget = await ctx.db
       .query('reportWidgets')
@@ -473,22 +613,34 @@ export const addReportWidget = mutation({
       .take(1)
 
     const now = Date.now()
-    const widgetId = await ctx.db.insert('reportWidgets', {
+    const baseDocument = {
       reportId: report._id,
-      sourceProfileId: sourceProfile._id,
-      sourceProfileSlug: sourceProfile.slug,
-      indicatorSlug: args.indicatorSlug,
-      indicatorLabel: args.indicatorLabel,
-      indicatorUnit: normalizeOptionalString(args.indicatorUnit),
-      indicatorKind: args.indicatorKind,
+      title: normalizeReportWidgetTitle(parsedArgs, members),
+      description: normalizeOptionalString(parsedArgs.description),
+      layout: normalizeReportWidgetLayout(parsedArgs),
+      members,
       order: (lastWidget[0]?.order ?? -1) + 1,
       createdAt: now,
       updatedAt: now,
-    })
+    }
+    const widgetId = await ctx.db.insert('reportWidgets', parsedArgs.widgetType === 'single_value'
+      ? {
+          ...baseDocument,
+          widgetType: 'single_value',
+        }
+      : {
+          ...baseDocument,
+          widgetType: 'chart',
+          chartKind: parsedArgs.chartKind,
+          timeRange: parsedArgs.timeRange
+            ? {
+                mode: parsedArgs.timeRange.mode,
+                limit: parsedArgs.timeRange.limit,
+              }
+            : undefined,
+        })
     await adjustReportWidgetUsageCounter(ctx, {
-      sourceProfileId: sourceProfile._id,
-      indicatorKind: args.indicatorKind,
-      indicatorSlug: args.indicatorSlug,
+      members,
     }, 1)
 
     await ctx.db.patch(report._id, {
