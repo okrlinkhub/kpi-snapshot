@@ -31,33 +31,62 @@ export const listMaterializableRows = query({
     scopeKind: v.union(v.literal('all'), v.literal('last_3_months')),
     dateFieldKey: v.optional(v.string()),
     indexKey: v.optional(v.string()),
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
   },
-  returns: v.array(v.any()),
+  returns: v.object({
+    page: v.array(v.any()),
+    isDone: v.boolean(),
+    continueCursor: v.union(v.string(), v.null()),
+  }),
   handler: async (ctx, args) => {
     const cutoff = scopeKindToCutoff(args.scopeKind)
     const dateFieldKey = args.dateFieldKey || '_creationTime'
-    const rows = (
+    const batchSize = Math.max(1, Math.min(args.batchSize ?? 250, 500))
+    const pageResult = (
       cutoff != null && args.indexKey
         ? await ctx.db
           .query(args.tableName as never)
           .withIndex(args.indexKey as never, (q) => q.gte(dateFieldKey as never, cutoff as never))
-          .collect()
-        : await ctx.db.query(args.tableName as never).collect()
-    ) as Array<Record<string, unknown> & {
+          .paginate({
+            numItems: batchSize,
+            cursor: args.cursor ?? null,
+          })
+        : await ctx.db
+          .query(args.tableName as never)
+          .order('asc')
+          .paginate({
+            numItems: batchSize,
+            cursor: args.cursor ?? null,
+          })
+    ) as {
+      page: Array<Record<string, unknown> & {
+        _id: string
+        _creationTime: number
+      }>
+      isDone: boolean
+      continueCursor: string
+    }
+
+    const page = pageResult.page as Array<Record<string, unknown> & {
       _id: string
       _creationTime: number
     }>
 
-    if (cutoff == null) {
-      return rows
-    }
-
-    return rows.filter((row) => {
+    const filteredPage = cutoff == null
+      ? page
+      : page.filter((row) => {
       const dateValue = getNestedValue(row, dateFieldKey)
       if (typeof dateValue === 'number') {
         return dateValue >= cutoff
       }
       return row._creationTime >= cutoff
     })
+
+    return {
+      page: filteredPage,
+      isDone: pageResult.isDone,
+      continueCursor: pageResult.isDone ? null : pageResult.continueCursor,
+    }
   },
 })

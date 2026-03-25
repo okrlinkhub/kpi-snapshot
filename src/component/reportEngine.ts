@@ -26,6 +26,8 @@ const reportWidgetValidator = v.object({
   _id: v.id('reportWidgets'),
   _creationTime: v.number(),
   reportId: v.id('reports'),
+  sourceProfileId: v.id('snapshotProfiles'),
+  sourceProfileSlug: v.string(),
   indicatorSlug: v.string(),
   indicatorLabel: v.string(),
   indicatorUnit: v.optional(v.string()),
@@ -46,6 +48,10 @@ function slugifyReportName (value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '') || 'report'
+}
+
+function normalizeReportUsageCount (value?: number) {
+  return Math.max(0, Math.trunc(value ?? 0))
 }
 
 async function getProfileBySlug (ctx: QueryCtx | MutationCtx, slug: string) {
@@ -106,6 +112,108 @@ async function getReportOrThrow (ctx: QueryCtx | MutationCtx, reportId: Id<'repo
     throw new Error('Report non trovato')
   }
   return report
+}
+
+async function getBaseIndicatorByProfileAndSlug (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  indicatorSlug: string
+) {
+  const rows = await ctx.db
+    .query('indicators')
+    .withIndex('by_profile_and_slug_and_version', (q) =>
+      q.eq('profileId', profileId).eq('slug', indicatorSlug)
+    )
+    .order('desc')
+    .take(1)
+  return rows[0] ?? null
+}
+
+async function getDerivedIndicatorByProfileAndSlug (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  indicatorSlug: string
+) {
+  const rows = await ctx.db
+    .query('derivedIndicators')
+    .withIndex('by_profile_and_slug_and_version', (q) =>
+      q.eq('profileId', profileId).eq('slug', indicatorSlug)
+    )
+    .order('desc')
+    .take(1)
+  return rows[0] ?? null
+}
+
+async function assertReportWidgetIndicatorExists (
+  ctx: QueryCtx | MutationCtx,
+  sourceProfileId: Id<'snapshotProfiles'>,
+  indicatorKind: 'base' | 'derived',
+  indicatorSlug: string
+) {
+  if (indicatorKind === 'base') {
+    const indicator = await getBaseIndicatorByProfileAndSlug(ctx, sourceProfileId, indicatorSlug)
+    if (!indicator) {
+      throw new Error(`Indicatore '${indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+    }
+    return
+  }
+
+  const derivedIndicator = await getDerivedIndicatorByProfileAndSlug(ctx, sourceProfileId, indicatorSlug)
+  if (!derivedIndicator) {
+    throw new Error(`Indicatore derivato '${indicatorSlug}' non trovato nel profilo sorgente selezionato`)
+  }
+}
+
+async function adjustReportWidgetUsageCounter (
+  ctx: MutationCtx,
+  widget: Pick<Doc<'reportWidgets'>, 'sourceProfileId' | 'indicatorKind' | 'indicatorSlug'>,
+  delta: 1 | -1
+) {
+  if (widget.indicatorKind === 'base') {
+    const indicator = await getBaseIndicatorByProfileAndSlug(
+      ctx,
+      widget.sourceProfileId,
+      widget.indicatorSlug
+    )
+    if (!indicator) {
+      return
+    }
+
+    await ctx.db.patch(indicator._id, {
+      reportUsageCount: Math.max(0, normalizeReportUsageCount(indicator.reportUsageCount) + delta),
+      updatedAt: Date.now(),
+    })
+    return
+  }
+
+  const derivedIndicator = await getDerivedIndicatorByProfileAndSlug(
+    ctx,
+    widget.sourceProfileId,
+    widget.indicatorSlug
+  )
+  if (!derivedIndicator) {
+    return
+  }
+
+  await ctx.db.patch(derivedIndicator._id, {
+    reportUsageCount: Math.max(0, normalizeReportUsageCount(derivedIndicator.reportUsageCount) + delta),
+    updatedAt: Date.now(),
+  })
+}
+
+async function adjustReportWidgetsUsageCounter (
+  ctx: MutationCtx,
+  reportId: Id<'reports'>,
+  delta: 1 | -1
+) {
+  const widgets = await ctx.db
+    .query('reportWidgets')
+    .withIndex('by_report', (q) => q.eq('reportId', reportId))
+    .collect()
+
+  for (const widget of widgets) {
+    await adjustReportWidgetUsageCounter(ctx, widget, delta)
+  }
 }
 
 async function loadReportDetail (
@@ -254,6 +362,7 @@ export const archiveReport = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const report = await getReportOrThrow(ctx, args.reportId)
+    await adjustReportWidgetsUsageCounter(ctx, report._id, -1)
 
     await ctx.db.patch(report._id, {
       isArchived: true,
@@ -287,6 +396,11 @@ export const updateReportMeta = mutation({
     const nextSlug = args.slug !== undefined
       ? await buildUniqueReportSlug(ctx, args.slug, report._id)
       : report.slug
+    const nextIsArchived = args.isArchived ?? report.isArchived
+
+    if (report.isArchived !== nextIsArchived) {
+      await adjustReportWidgetsUsageCounter(ctx, report._id, nextIsArchived ? -1 : 1)
+    }
 
     await ctx.db.patch(report._id, {
       name: args.name?.trim() || report.name,
@@ -294,7 +408,7 @@ export const updateReportMeta = mutation({
         ? normalizeOptionalString(args.description)
         : report.description,
       slug: nextSlug,
-      isArchived: args.isArchived ?? report.isArchived,
+      isArchived: nextIsArchived,
       updatedByKey: normalizeOptionalString(args.updatedByKey),
       updatedAt: Date.now(),
     })
@@ -309,6 +423,7 @@ export const updateReportMeta = mutation({
 export const addReportWidget = mutation({
   args: {
     reportId: v.id('reports'),
+    sourceProfileSlug: v.string(),
     indicatorSlug: v.string(),
     indicatorLabel: v.string(),
     indicatorUnit: v.optional(v.string()),
@@ -317,19 +432,30 @@ export const addReportWidget = mutation({
   returns: v.id('reportWidgets'),
   handler: async (ctx, args) => {
     const report = await getReportOrThrow(ctx, args.reportId)
+    const sourceProfile = await getProfileBySlug(ctx, args.sourceProfileSlug)
+
+    await assertReportWidgetIndicatorExists(
+      ctx,
+      sourceProfile._id,
+      args.indicatorKind,
+      args.indicatorSlug
+    )
 
     const existingWidget = await ctx.db
       .query('reportWidgets')
-      .withIndex('by_report_and_indicator_kind_and_indicator_slug', (q) =>
+      .withIndex('by_report_and_kind_and_source_profile_and_slug', (q) =>
         q
           .eq('reportId', report._id)
           .eq('indicatorKind', args.indicatorKind)
+          .eq('sourceProfileId', sourceProfile._id)
           .eq('indicatorSlug', args.indicatorSlug)
       )
       .unique()
 
     if (existingWidget) {
       await ctx.db.patch(existingWidget._id, {
+        sourceProfileId: sourceProfile._id,
+        sourceProfileSlug: sourceProfile.slug,
         indicatorLabel: args.indicatorLabel,
         indicatorUnit: normalizeOptionalString(args.indicatorUnit),
         updatedAt: Date.now(),
@@ -349,6 +475,8 @@ export const addReportWidget = mutation({
     const now = Date.now()
     const widgetId = await ctx.db.insert('reportWidgets', {
       reportId: report._id,
+      sourceProfileId: sourceProfile._id,
+      sourceProfileSlug: sourceProfile.slug,
       indicatorSlug: args.indicatorSlug,
       indicatorLabel: args.indicatorLabel,
       indicatorUnit: normalizeOptionalString(args.indicatorUnit),
@@ -357,6 +485,11 @@ export const addReportWidget = mutation({
       createdAt: now,
       updatedAt: now,
     })
+    await adjustReportWidgetUsageCounter(ctx, {
+      sourceProfileId: sourceProfile._id,
+      indicatorKind: args.indicatorKind,
+      indicatorSlug: args.indicatorSlug,
+    }, 1)
 
     await ctx.db.patch(report._id, {
       updatedAt: now,
@@ -378,6 +511,7 @@ export const removeReportWidget = mutation({
     }
 
     const report = await getReportOrThrow(ctx, widget.reportId)
+    await adjustReportWidgetUsageCounter(ctx, widget, -1)
     await ctx.db.delete(widget._id)
 
     const remainingWidgets = await ctx.db

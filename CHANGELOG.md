@@ -6,6 +6,20 @@ Il formato è basato su [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)
 
 ## [Unreleased]
 
+### Breaking changes
+
+- `createSnapshotRun` è ora puramente async: crea `snapshot` + `snapshotRun`, ritorna subito e completa il lavoro in background.
+- `snapshots.status` e `snapshotRuns.status` usano ora il workflow operativo `queued | loading | processing | deriving | freezing | completed | error`.
+- Nuova tabella `snapshotRunSources` per tracciare avanzamento e retry per source.
+- `requestExport` e `regenerateExport` convergono sul workflow batch-safe di `exportWorkflows` invece del vecchio path monolitico.
+
+### Changed
+
+- Rimossi i full-scan `.collect()` dai path critici di snapshot/export; il caricamento delle righe materializzate avviene ora a batch.
+- Il freeze export audit è parte dello stato finale del run snapshot, non un side effect fuori banda.
+- Aggiunta query `getSnapshotRunStatus` per polling UI e osservabilità del progresso.
+- `materializationReader.listMaterializableRows` è ora paginata con `cursor` e `batchSize`, per evitare letture monolitiche anche sui namespace letti tramite reader del componente.
+
 ## [1.0.0] - 2026-03-23
 
 ### Breaking changes

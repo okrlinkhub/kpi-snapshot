@@ -44,7 +44,14 @@ function escapeCsvValue(value: unknown) {
   if (typeof value === "object") {
     return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
   }
-  const raw = String(value).replace(/\r?\n/g, " ");
+  const raw = (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+      ? String(value)
+      : JSON.stringify(value)
+  ).replace(/\r?\n/g, " ");
   if (raw.includes('"') || raw.includes(",") || raw.includes(";")) {
     return `"${raw.replace(/"/g, '""')}"`;
   }
@@ -72,7 +79,15 @@ function matchesExportFilters(
       return true;
     }
     const value = row.rowData[fieldFilter.fieldKey];
-    return fieldFilter.values.includes(value == null ? "" : String(value));
+    const normalizedValue = value == null
+      ? ""
+      : typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean" ||
+          typeof value === "bigint"
+          ? String(value)
+          : JSON.stringify(value);
+    return fieldFilter.values.includes(normalizedValue);
   });
 }
 
@@ -476,10 +491,11 @@ export const attachExportToSnapshot = internalMutation({
     }
     const runItems = await ctx.db
       .query("snapshotRunItems")
-      .withIndex("by_snapshot_run", (q) => q.eq("snapshotRunId", snapshotRunId))
+      .withIndex("by_snapshot_run_and_data_source", (q) =>
+        q.eq("snapshotRunId", snapshotRunId).eq("dataSourceId", dataSource._id)
+      )
       .collect();
-    const matchingItems = runItems.filter((item) => item.dataSourceId === dataSource._id);
-    for (const item of matchingItems) {
+    for (const item of runItems) {
       await ctx.db.patch(item._id, {
         sourceExportIds: [...new Set([...(item.sourceExportIds ?? []), exportId])],
       });

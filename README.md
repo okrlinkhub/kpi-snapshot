@@ -39,6 +39,7 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 - generazione di export CSV globali automatici per audit/materializzazione e di export custom opzionalmente `profile-scoped`, con persistenza su storage Convex;
 - generazione di `snapshot`, `snapshotValues` e storico `values`;
 - audit interno `snapshotValue -> sourceExportIds`;
+- versioning obbligatorio di indicatori base e derivati tramite coppia logica `slug` + `version`;
 - calcolo di indicatori derivati direttamente nel componente;
 - persistenza di report profile-scoped e widget ordinabili, con `slug` globale univoco per deep-link stabili;
 - persistenza opzionale di `externalId` su `indicators` e `values`;
@@ -74,6 +75,8 @@ Regole operative:
 - `dataSources` e` globale nell'app: ogni profilo sceglie quali source usare quando definisce KPI o export custom.
 - `materializationJobs` e `analyticsMaterializedRows` dipendono solo dalla source, non dal profilo.
 - `calculationDefinitions`, `indicators`, `derivedIndicators`, `snapshots` e `reports` restano profile-scoped.
+- `indicators` e `derivedIndicators` sono versionati: lo stesso `slug` puo` avere piu` versioni nello stesso profilo.
+- le query runtime e i report risolvono sempre l'ultima `version` disponibile per ogni `slug`.
 - ogni report ha uno `slug` globale univoco, così l'host puo` costruire route semplici come `/analytics/report/[slug]` senza includere il profilo nell'URL.
 - `analyticsExports` distingue:
   - export automatici globali, prodotti da materializzazione o freeze audit;
@@ -90,6 +93,7 @@ Da questa revisione il flusso corretto e`:
 - l'import schema non resetta piu` in-line dati materializzati o job; quel wipe vive in un reset job separato e batch-safe;
 - la UI di creazione di una `dataSource` legge solo definizioni generate dal registry;
 - `databaseKey` diversi da `app` sono materializzabili solo se l'host registra un reader esplicito per quel namespace;
+- i reader interni del componente espongono paginazione a cursore, così l'host può leggere namespace esterni senza `collect()` monolitici;
 - il solo `sourceKind` supportato e` `materialized_rows`.
 
 Campi principali di `schemaImports`:
@@ -112,7 +116,13 @@ Campi principali di `dataSources` lato runtime:
 
 - `schedulePreset` come cadence operativa obbligatoria
 - `dateFieldKey` come campo temporale usato da filtri/materializzazione
-- `materializationIndexKey` opzionale per fissare un indice host-side compatibile con `dateFieldKey`
+- `materializationIndexKey` risolto automaticamente dal componente scegliendo il primo indice host-side compatibile con `dateFieldKey`
+
+Compatibilita` degli indici temporali:
+
+- un indice e` compatibile se il suo primo campo coincide con `dateFieldKey`
+- indici composti come `['createdAt', 'clinicId']` restano validi per il pruning temporale
+- indici dove `dateFieldKey` non e` il primo campo non vengono usati dal reader
 
 API componente rilevanti:
 
@@ -183,6 +193,7 @@ Suggerimento implementativo host-side:
 1. chiedi al componente i target con `listScheduledRefreshTargets({ schedulePreset })`
 2. materializza ogni source con il reader host-side
 3. dopo la materializzazione, invoca `createSnapshotRun` per ogni profilo impattato passando `triggerSourceKey`
+4. usa `getSnapshotRunStatus({ snapshotRunId })` per polling finché il run non arriva a `completed` o `error`
 
 In questo modo il refresh schedulato di una source aggiorna solo i KPI coerenti con quella cadence.
 
@@ -244,7 +255,8 @@ L'app host:
 
 - parse gli `schema.ts` con una action Node separata dal componente;
 - salva il risultato nel componente e rigenera il catalogo persistito;
-- materializza tramite un reader registry host-side leggendo `databaseKey`, `tableName`, `fieldCatalog`, `rowKeyStrategy` e l'eventuale `materializationIndexKey` scelto sulla data source;
+- materializza tramite un reader registry host-side leggendo `databaseKey`, `tableName`, `fieldCatalog`, `rowKeyStrategy` e l'eventuale `materializationIndexKey` risolto automaticamente sulla data source;
+- quando legge tabelle del namespace `kpiSnapshot`, usa `materializationReader.listMaterializableRows` in modalità paginata (`cursor`, `batchSize`, `continueCursor`);
 - puo` supportare namespace aggiuntivi (es. `kpiSnapshot`) solo registrando reader dedicati.
 
 Il formato finale delle righe materializzate resta:
@@ -305,6 +317,16 @@ Durante `createSnapshot` orchestrato dalla tua app:
 - congela una volta sola il dataset di ogni source usata nello snapshot;
 - salva l'export frozen in `analyticsExports`;
 - mantiene la tracciabilita' fino a `snapshotValue -> sourceExportIds -> analyticsExports`.
+
+`createSnapshotRun` non esegue piu' tutto in una singola mutation: crea subito `snapshot` + `snapshotRun`, mette il job in coda e prosegue in background con stati osservabili:
+
+- `queued`
+- `loading`
+- `processing`
+- `deriving`
+- `freezing`
+- `completed`
+- `error`
 
 Tipicamente la tua app usa `createSnapshot`:
 
@@ -389,10 +411,14 @@ Limite importante: `kpi-snapshot` non può inventare da solo metadati come `comp
 
 Funzioni principali esposte dal helper:
 
-- lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
+- lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `getSnapshotRunStatus`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
 - report builder: `listReports`, `getReport`, `getReportBySlug`, `createReport`, `archiveReport`, `updateReportMeta`, `addReportWidget`, `removeReportWidget`, `reorderReportWidgets`
-- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `replaceProfileDefinitions`, `toggleCalculation`
-- esecuzione: orchestrazione host-side di `createSnapshot`
+- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `rebuildIndicatorReportUsageCounters`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `replaceProfileDefinitions`, `toggleCalculation`
+
+Nota migrazione:
+
+- se hai già report salvati prima di introdurre `reportUsageCount`, esegui una volta `rebuildIndicatorReportUsageCounters()` dopo il deploy per riallineare i contatori storici
+- esecuzione: `createSnapshotRun` async con polling esplicito dello stato job
 - mapping esterni: `getIndicatorBySlug`, `getIndicatorByExternalId`, `setIndicatorExternalId`, `getValueByExternalId`, `listValuesForSync`, `setValueExternalId`
 - integrazione OKRHub: `ensureIndicatorOkrhubLink`, `syncValuesToOkrhub`
 
@@ -427,49 +453,41 @@ Campi rilevanti per integrazione:
 
 Questi campi restano opzionali per non rompere installazioni esistenti e sono usati solo quando vuoi collegare il componente a OKRHub o a un altro sistema esterno.
 
+Per i run snapshot, i campi di stato ora seguono il workflow operativo completo:
+
+- `snapshots.status`: `queued | loading | processing | deriving | freezing | completed | error`
+- `snapshotRuns.status`: `queued | loading | processing | deriving | freezing | completed | error`
+- `snapshotRunSources.status`: `pending | processing | completed | error`
+
 ## Migrazione da versioni precedenti
 
-### Migrazione obbligatoria a `1.0.0`
+### Breaking change di versioning
 
-`1.0.0` introduce una breaking schema migration:
+Questa revisione introduce un breaking change intenzionale sul modello dei KPI:
 
-- la tabella `sourceRows` viene rimossa;
-- la tua action/mutation host `createSnapshot` non legge piu' righe persistite nel componente;
-- ogni `snapshotValue` salva la propria evidence CSV tramite `evidenceRef`.
+- `upsertIndicator(...)` richiede `version`;
+- `upsertDerivedIndicator(...)` richiede `version`;
+- `upsertCalculationDefinition(...)` e `replaceProfileDefinitions(...)` richiedono la `indicatorVersion` target;
+- `indicators` e `derivedIndicators` non sono piu` tabelle con uno `slug` univoco per profilo, ma famiglie di versioni identificate da `(profileId, slug, version)`;
+- `snapshotValues`, `snapshotRunItems`, `integrationValues` e `derivedSnapshotValues` salvano la `version` usata durante il calcolo.
 
-Prima di aggiornare un'installazione esistente devi:
+Dato che `kpi-snapshot` non ha ancora installazioni attive, non e` previsto alcun compat layer.
 
-1. svuotare completamente tutte le righe presenti nella tabella `sourceRows`;
-2. deployare lo schema/API della `1.0.0`;
-3. aggiornare l'app host per usare `createSnapshot(..., sourcePayloads)`;
-4. verificare che i download evidence risalgano correttamente a `snapshotValue -> snapshotRunItemId -> dataSourceId`.
+### Regola operativa consigliata
 
-### Nuovi `externalId`
+Quando un utente scopre un errore nella formula:
 
-Le installazioni esistenti non richiedono una migrazione obbligatoria per i campi `externalId`: restano opzionali.
+1. non modificare la versione esistente;
+2. crea una nuova versione dello stesso `slug`;
+3. collega le nuove `calculationDefinitions` alla nuova versione;
+4. lascia che report e query `latest` risolvano automaticamente la versione piu` recente.
 
-Puoi popolarli in modo incrementale:
+In questo modo:
 
-- in fase di `upsertIndicator`, passando `externalId`;
-- con `setIndicatorExternalId`, per collegare indicatori già esistenti;
-- con `setValueExternalId`, per backfillare valori già sincronizzati altrove.
-
-### Compatibilità `indicatorLabelSnapshot`
-
-Per compatibilità con installazioni già in uso, il campo `snapshotValues.indicatorLabelSnapshot` è temporaneamente `optional`.
-
-Backfill consigliato:
-
-```ts
-await ctx.runMutation(
-  components.kpiSnapshot.snapshotEngine.backfillIndicatorLabelSnapshot,
-  { dryRun: false }
-);
-```
-
-Opzioni utili:
-
-- `dryRun: true` per stimare gli aggiornamenti senza scrivere
+- lo `slug` resta stabile per UI e report;
+- il componente evita sovrascritture in place;
+- gli snapshot futuri usano la versione corrente;
+- i valori di sync possono conservare i metadati della versione usata al momento del calcolo.
 - `profileSlug` per limitare il backfill a un profilo
 
 ## Ricette regole pronte

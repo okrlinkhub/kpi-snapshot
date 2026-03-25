@@ -1,6 +1,7 @@
 import { defineSchema, defineTable } from 'convex/server'
 import { v } from 'convex/values'
 import { calculationFiltersValidator } from './lib/calculationFilters.js'
+import { derivedFormulaValidator } from '../shared/derivedFormula.js'
 const sourceKindValidator = v.literal('materialized_rows')
 
 const schedulePresetValidator = v.union(
@@ -280,17 +281,19 @@ export default defineSchema({
   indicators: defineTable({
     profileId: v.id("snapshotProfiles"),
     slug: v.string(),
+    version: v.number(),
     label: v.string(),
     unit: v.optional(v.string()),
     category: v.optional(v.string()),
     description: v.optional(v.string()),
     externalId: v.optional(v.string()),
+    reportUsageCount: v.optional(v.number()),
     enabled: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
     .index("by_profile", ["profileId"])
-    .index("by_profile_and_slug", ["profileId", "slug"])
+    .index("by_profile_and_slug_and_version", ["profileId", "slug", "version"])
     .index("by_external_id", ["externalId"]),
 
   calculationDefinitions: defineTable({
@@ -327,6 +330,8 @@ export default defineSchema({
     snapshotRunId: v.id("snapshotRuns"),
     profileId: v.id("snapshotProfiles"),
     indicatorId: v.id("indicators"),
+    indicatorVersion: v.number(),
+    indicatorExternalIdSnapshot: v.optional(v.string()),
     externalId: v.optional(v.string()),
     value: v.number(),
     measuredAt: v.number(),
@@ -348,9 +353,12 @@ export default defineSchema({
     profileId: v.id("snapshotProfiles"),
     snapshotAt: v.number(),
     status: v.union(
-      v.literal("pending"),
-      v.literal("running"),
-      v.literal("success"),
+      v.literal("queued"),
+      v.literal("loading"),
+      v.literal("processing"),
+      v.literal("deriving"),
+      v.literal("freezing"),
+      v.literal("completed"),
       v.literal("error")
     ),
     note: v.optional(v.string()),
@@ -368,14 +376,23 @@ export default defineSchema({
     errorMessage: v.optional(v.string()),
   })
     .index("by_profile", ["profileId"])
-    .index("by_profile_and_snapshot_at", ["profileId", "snapshotAt"]),
+    .index("by_profile_and_snapshot_at", ["profileId", "snapshotAt"])
+    .index("by_status", ["status"]),
 
   snapshotRuns: defineTable({
     snapshotId: v.id("snapshots"),
     profileId: v.id("snapshotProfiles"),
     startedAt: v.number(),
     finishedAt: v.optional(v.number()),
-    status: v.union(v.literal("running"), v.literal("success"), v.literal("error")),
+    status: v.union(
+      v.literal("queued"),
+      v.literal("loading"),
+      v.literal("processing"),
+      v.literal("deriving"),
+      v.literal("freezing"),
+      v.literal("completed"),
+      v.literal("error")
+    ),
     errorMessage: v.optional(v.string()),
     triggeredBy: v.optional(v.string()),
     triggerKind: v.optional(
@@ -388,9 +405,38 @@ export default defineSchema({
     triggerSourceKey: v.optional(v.string()),
     definitionsCount: v.number(),
     processedCount: v.number(),
+    errorCount: v.number(),
+    sourceCount: v.number(),
+    completedSourceCount: v.number(),
+    currentSourceKey: v.optional(v.string()),
   })
     .index("by_snapshot", ["snapshotId"])
-    .index("by_profile", ["profileId"]),
+    .index("by_profile", ["profileId"])
+    .index("by_status", ["status"]),
+
+  snapshotRunSources: defineTable({
+    snapshotRunId: v.id("snapshotRuns"),
+    snapshotId: v.id("snapshots"),
+    profileId: v.id("snapshotProfiles"),
+    dataSourceId: v.id("dataSources"),
+    sourceKey: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("processing"),
+      v.literal("completed"),
+      v.literal("error")
+    ),
+    definitionCount: v.number(),
+    processedCount: v.number(),
+    errorCount: v.number(),
+    errorMessage: v.optional(v.string()),
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    finishedAt: v.optional(v.number()),
+  })
+    .index("by_snapshot_run", ["snapshotRunId"])
+    .index("by_snapshot_run_and_status", ["snapshotRunId", "status"])
+    .index("by_snapshot_run_and_source_key", ["snapshotRunId", "sourceKey"]),
 
   snapshotRunItems: defineTable({
     snapshotRunId: v.id("snapshotRuns"),
@@ -398,6 +444,7 @@ export default defineSchema({
     profileId: v.id("snapshotProfiles"),
     definitionId: v.id("calculationDefinitions"),
     indicatorId: v.id("indicators"),
+    indicatorVersion: v.number(),
     dataSourceId: v.id("dataSources"),
     status: v.union(v.literal("success"), v.literal("skipped"), v.literal("error")),
     inputCount: v.number(),
@@ -418,7 +465,8 @@ export default defineSchema({
   })
     .index("by_snapshot_run", ["snapshotRunId"])
     .index("by_snapshot", ["snapshotId"])
-    .index("by_definition", ["definitionId"]),
+    .index("by_definition", ["definitionId"])
+    .index("by_snapshot_run_and_data_source", ["snapshotRunId", "dataSourceId"]),
 
   snapshotValues: defineTable({
     snapshotId: v.id("snapshots"),
@@ -426,8 +474,10 @@ export default defineSchema({
     snapshotRunItemId: v.id("snapshotRunItems"),
     profileId: v.id("snapshotProfiles"),
     indicatorId: v.id("indicators"),
+    indicatorVersion: v.number(),
     indicatorLabelSnapshot: v.string(),
     value: v.number(),
+    snapshotAt: v.number(),
     computedAt: v.number(),
     ruleHash: v.string(),
     sourceExportIds: v.array(v.id("analyticsExports")),
@@ -442,6 +492,7 @@ export default defineSchema({
     .index("by_snapshot", ["snapshotId"])
     .index("by_snapshot_and_indicator", ["snapshotId", "indicatorId"])
     .index("by_indicator", ["indicatorId"])
+    .index("by_indicator_and_snapshot_at", ["indicatorId", "snapshotAt"])
     .index("by_snapshot_run_item", ["snapshotRunItemId"]),
 
   calculationTraces: defineTable({
@@ -462,35 +513,21 @@ export default defineSchema({
   derivedIndicators: defineTable({
     profileId: v.id("snapshotProfiles"),
     slug: v.string(),
+    version: v.number(),
     label: v.string(),
     unit: v.optional(v.string()),
     description: v.optional(v.string()),
-    formula: v.object({
-      kind: v.union(
-        v.literal("ratio"),
-        v.literal("difference"),
-        v.literal("sum")
-      ),
-      operands: v.array(
-        v.object({
-          indicatorSlug: v.string(),
-          role: v.optional(
-            v.union(
-              v.literal("numerator"),
-              v.literal("denominator"),
-              v.literal("term")
-            )
-          ),
-          weight: v.optional(v.number()),
-        })
-      ),
-    }),
+    reportUsageCount: v.optional(v.number()),
+    formula: derivedFormulaValidator,
+    directBaseDependencySlugs: v.optional(v.array(v.string())),
+    directDerivedDependencySlugs: v.optional(v.array(v.string())),
+    transitiveDerivedDependencySlugs: v.optional(v.array(v.string())),
     enabled: v.boolean(),
     createdAt: v.number(),
     updatedAt: v.optional(v.number()),
   })
     .index("by_profile", ["profileId"])
-    .index("by_profile_and_slug", ["profileId", "slug"]),
+    .index("by_profile_and_slug_and_version", ["profileId", "slug", "version"]),
 
   derivedSnapshotValues: defineTable({
     snapshotId: v.id("snapshots"),
@@ -498,17 +535,25 @@ export default defineSchema({
     profileId: v.id("snapshotProfiles"),
     derivedIndicatorId: v.id("derivedIndicators"),
     derivedIndicatorSlug: v.string(),
+    derivedIndicatorVersion: v.number(),
     derivedIndicatorLabelSnapshot: v.string(),
     derivedIndicatorUnit: v.optional(v.string()),
     formulaKind: v.union(
       v.literal("ratio"),
       v.literal("difference"),
-      v.literal("sum")
+      v.literal("sum"),
+      v.literal("expression")
     ),
+    formulaVersion: v.number(),
     value: v.number(),
+    snapshotAt: v.number(),
     computedAt: v.number(),
     baseSnapshotValueIds: v.array(v.id("snapshotValues")),
     baseIndicatorSlugs: v.array(v.string()),
+    baseIndicatorVersions: v.array(v.number()),
+    derivedSnapshotValueIds: v.array(v.id("derivedSnapshotValues")),
+    derivedIndicatorDependencySlugs: v.array(v.string()),
+    derivedIndicatorDependencyVersions: v.array(v.number()),
     sourceExportIds: v.array(v.id("analyticsExports")),
     formulaSnapshot: v.any(),
     createdAt: v.number(),
@@ -516,6 +561,7 @@ export default defineSchema({
     .index("by_snapshot", ["snapshotId"])
     .index("by_profile", ["profileId"])
     .index("by_derived_indicator", ["derivedIndicatorId"])
+    .index("by_derived_indicator_and_snapshot_at", ["derivedIndicatorId", "snapshotAt"])
     .index("by_snapshot_and_slug", ["snapshotId", "derivedIndicatorSlug"]),
 
   reports: defineTable({
@@ -536,6 +582,8 @@ export default defineSchema({
 
   reportWidgets: defineTable({
     reportId: v.id("reports"),
+    sourceProfileId: v.id("snapshotProfiles"),
+    sourceProfileSlug: v.string(),
     indicatorSlug: v.string(),
     indicatorLabel: v.string(),
     indicatorUnit: v.optional(v.string()),
@@ -546,9 +594,10 @@ export default defineSchema({
   })
     .index("by_report", ["reportId"])
     .index("by_report_and_order", ["reportId", "order"])
-    .index("by_report_and_indicator_kind_and_indicator_slug", [
+    .index("by_report_and_kind_and_source_profile_and_slug", [
       "reportId",
       "indicatorKind",
+      "sourceProfileId",
       "indicatorSlug",
     ]),
 

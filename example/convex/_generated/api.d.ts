@@ -209,12 +209,14 @@ export declare const components: {
         "query",
         "internal",
         {
+          batchSize?: number;
+          cursor?: string;
           dateFieldKey?: string;
           indexKey?: string;
           scopeKind: "all" | "last_3_months";
           tableName: string;
         },
-        Array<any>
+        { continueCursor: string | null; isDone: boolean; page: Array<any> }
       >;
     };
     reportEngine: {

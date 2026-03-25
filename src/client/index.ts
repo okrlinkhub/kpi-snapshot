@@ -16,6 +16,7 @@ import type {
 import { v } from "convex/values";
 import type { ComponentApi } from "../component/_generated/component.js";
 import { calculationFiltersValidator } from "../component/lib/calculationFilters.js";
+import { derivedFormulaValidator } from "../shared/derivedFormula.js";
 
 export type { ComponentApi } from "../component/_generated/component.js";
 
@@ -36,6 +37,8 @@ export type AnalyticsReportSummary = {
 export type AnalyticsReportWidget = {
   _id: string
   reportId: string
+  sourceProfileId: string
+  sourceProfileSlug: string
   indicatorSlug: string
   indicatorLabel: string
   indicatorUnit?: string
@@ -288,6 +291,37 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    createSnapshotRun: mutationGeneric({
+      args: {
+        profileSlug: v.string(),
+        snapshotAt: v.optional(v.number()),
+        triggeredBy: v.optional(v.string()),
+        note: v.optional(v.string()),
+        triggerKind: v.optional(v.union(
+          v.literal("manual"),
+          v.literal("source_materialization"),
+          v.literal("scheduled_materialization")
+        )),
+        triggerSourceKey: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "insert", entityType: "snapshot" });
+        }
+        return await ctx.runMutation(component.snapshotEngine.createSnapshotRun, args);
+      },
+    }),
+
+    getSnapshotRunStatus: queryGeneric({
+      args: { snapshotRunId: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotRun" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getSnapshotRunStatus, args);
+      },
+    }),
+
     listSnapshotValues: queryGeneric({
       args: { snapshotId: v.string() },
       handler: async (ctx, args) => {
@@ -295,6 +329,16 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           await options.auth(ctx, { type: "read", entityType: "snapshotValue" });
         }
         return await ctx.runQuery(component.snapshotEngine.listSnapshotValues, args);
+      },
+    }),
+
+    getLatestSnapshotValuesForProfile: queryGeneric({
+      args: { profileSlug: v.string() },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "snapshotValue" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.getLatestSnapshotValuesForProfile, args);
       },
     }),
 
@@ -395,6 +439,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
     addReportWidget: mutationGeneric({
       args: {
         reportId: v.string(),
+        sourceProfileSlug: v.string(),
         indicatorSlug: v.string(),
         indicatorLabel: v.string(),
         indicatorUnit: v.optional(v.string()),
@@ -501,6 +546,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       args: {
         profileSlug: v.string(),
         slug: v.string(),
+        version: v.number(),
         label: v.string(),
         unit: v.optional(v.string()),
         category: v.optional(v.string()),
@@ -516,10 +562,23 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    rebuildIndicatorReportUsageCounters: mutationGeneric({
+      args: {
+        profileSlug: v.optional(v.string()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "update", entityType: "indicator" });
+        }
+        return await ctx.runMutation(component.snapshotEngine.rebuildIndicatorReportUsageCounters, args);
+      },
+    }),
+
     upsertCalculationDefinition: mutationGeneric({
       args: {
         profileSlug: v.string(),
         indicatorSlug: v.string(),
+        indicatorVersion: v.number(),
         sourceKey: v.string(),
         operation: v.union(
           v.literal("sum"),
@@ -552,29 +611,11 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       args: {
         profileSlug: v.string(),
         slug: v.string(),
+        version: v.number(),
         label: v.string(),
         unit: v.optional(v.string()),
         description: v.optional(v.string()),
-        formula: v.object({
-          kind: v.union(
-            v.literal("ratio"),
-            v.literal("difference"),
-            v.literal("sum")
-          ),
-          operands: v.array(
-            v.object({
-              indicatorSlug: v.string(),
-              role: v.optional(
-                v.union(
-                  v.literal("numerator"),
-                  v.literal("denominator"),
-                  v.literal("term")
-                )
-              ),
-              weight: v.optional(v.number()),
-            })
-          ),
-        }),
+        formula: derivedFormulaValidator,
         enabled: v.optional(v.boolean()),
       },
       handler: async (ctx, args) => {
@@ -601,6 +642,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         definitions: v.array(
           v.object({
             indicatorSlug: v.string(),
+            indicatorVersion: v.number(),
             sourceKey: v.string(),
             operation: v.union(
               v.literal("sum"),
@@ -732,7 +774,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
-    requestExport: mutationGeneric({
+    requestExport: actionGeneric({
       args: {
         requestedBy: v.optional(v.string()),
         name: v.optional(v.string()),
@@ -756,11 +798,11 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         if (options?.auth) {
           await options.auth(ctx, { type: "insert", entityType: "export" });
         }
-        return await ctx.runMutation(component.snapshotEngine.requestExport, args);
+        return await ctx.runAction(component.snapshotEngine.requestExport, args);
       },
     }),
 
-    regenerateExport: mutationGeneric({
+    regenerateExport: actionGeneric({
       args: {
         exportId: v.string(),
         requestedBy: v.optional(v.string()),
@@ -770,7 +812,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         if (options?.auth) {
           await options.auth(ctx, { type: "insert", entityType: "export" });
         }
-        return await ctx.runMutation(component.snapshotEngine.regenerateExport, args);
+        return await ctx.runAction(component.snapshotEngine.regenerateExport, args);
       },
     }),
 

@@ -192,12 +192,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         {
+          batchSize?: number;
+          cursor?: string;
           dateFieldKey?: string;
           indexKey?: string;
           scopeKind: "all" | "last_3_months";
           tableName: string;
         },
-        Array<any>,
+        { continueCursor: string | null; isDone: boolean; page: Array<any> },
         Name
       >;
     };
@@ -211,6 +213,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           indicatorSlug: string;
           indicatorUnit?: string;
           reportId: string;
+          sourceProfileSlug: string;
         },
         string,
         Name
@@ -264,6 +267,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             indicatorUnit?: string;
             order: number;
             reportId: string;
+            sourceProfileId: string;
+            sourceProfileSlug: string;
             updatedAt?: number;
           }>;
         } | null,
@@ -298,6 +303,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             indicatorUnit?: string;
             order: number;
             reportId: string;
+            sourceProfileId: string;
+            sourceProfileSlug: string;
             updatedAt?: number;
           }>;
         } | null,
@@ -507,7 +514,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           processedCount: number;
           snapshotId: string;
           snapshotRunId: string;
-          status: "success" | "error";
+          status:
+            | "queued"
+            | "loading"
+            | "processing"
+            | "deriving"
+            | "freezing"
+            | "completed"
+            | "error";
         },
         Name
       >;
@@ -589,6 +603,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         { snapshotId: string },
+        any | null,
+        Name
+      >;
+      getSnapshotRunStatus: FunctionReference<
+        "query",
+        "internal",
+        { snapshotRunId: string },
         any | null,
         Name
       >;
@@ -714,8 +735,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Array<any>,
         Name
       >;
-      regenerateExport: FunctionReference<
+      rebuildIndicatorReportUsageCounters: FunctionReference<
         "mutation",
+        "internal",
+        { profileSlug?: string },
+        {
+          activeReportCount: number;
+          activeWidgetCount: number;
+          updatedBaseIndicatorCount: number;
+          updatedDerivedIndicatorCount: number;
+        },
+        Name
+      >;
+      regenerateExport: FunctionReference<
+        "action",
         "internal",
         { exportId: string; name?: string; requestedBy?: string },
         string,
@@ -770,6 +803,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             };
             groupBy?: Array<string>;
             indicatorSlug: string;
+            indicatorVersion: number;
             normalization?: any;
             operation:
               | "sum"
@@ -788,7 +822,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
       requestExport: FunctionReference<
-        "mutation",
+        "action",
         "internal",
         {
           clonedFromExportId?: string;
@@ -879,6 +913,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           };
           groupBy?: Array<string>;
           indicatorSlug: string;
+          indicatorVersion: number;
           normalization?: any;
           operation: "sum" | "count" | "avg" | "min" | "max" | "distinct_count";
           priority?: number;
@@ -976,18 +1011,41 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           description?: string;
           enabled?: boolean;
-          formula: {
-            kind: "ratio" | "difference" | "sum";
-            operands: Array<{
-              indicatorSlug: string;
-              role?: "numerator" | "denominator" | "term";
-              weight?: number;
-            }>;
-          };
+          formula:
+            | {
+                formulaVersion?: 1;
+                kind: "ratio" | "difference" | "sum";
+                operands: Array<{
+                  indicatorSlug: string;
+                  role?: "numerator" | "denominator" | "term";
+                  weight?: number;
+                }>;
+              }
+            | {
+                formulaVersion: 2;
+                nodes: Array<
+                  | {
+                      id: string;
+                      indicatorKind: "base" | "derived";
+                      indicatorSlug: string;
+                      type: "ref";
+                    }
+                  | { id: string; type: "constant"; value: number }
+                  | {
+                      id: string;
+                      leftNodeId: string;
+                      op: "add" | "sub" | "mul" | "div";
+                      rightNodeId: string;
+                      type: "operation";
+                    }
+                >;
+                rootNodeId: string;
+              };
           label: string;
           profileSlug: string;
           slug: string;
           unit?: string;
+          version: number;
         },
         string,
         Name
@@ -1004,6 +1062,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           profileSlug: string;
           slug: string;
           unit?: string;
+          version: number;
         },
         string,
         Name
