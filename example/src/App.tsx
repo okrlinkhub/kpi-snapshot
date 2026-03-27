@@ -38,7 +38,6 @@ type RuleDefinition = {
     fieldRules: Array<{ field: string; op: FilterOperator; rightOperand: FilterRightOperand }>;
     timeRange?: { kind: CalculationTimeRangeKind };
   };
-  groupBy?: Array<string>;
   normalization?: unknown;
   priority: number;
   enabled: boolean;
@@ -206,7 +205,6 @@ export default function App() {
   const [newFieldPath, setNewFieldPath] = useState("");
   const [newPriority, setNewPriority] = useState(100);
   const [newEnabled, setNewEnabled] = useState(true);
-  const [newGroupBy, setNewGroupBy] = useState("");
   const [ruleFilters, setRuleFilters] = useState<Array<FilterDraft>>([]);
   const [timeRangeKind, setTimeRangeKind] = useState<CalculationTimeRangeKind | "">("");
   const [editingDefinitionId, setEditingDefinitionId] = useState<string | null>(null);
@@ -256,7 +254,6 @@ export default function App() {
     setNewFieldPath("");
     setNewPriority(100);
     setNewEnabled(true);
-    setNewGroupBy("");
     setRuleFilters([]);
     setTimeRangeKind("");
   };
@@ -379,11 +376,6 @@ export default function App() {
         timeRange: timeRangeKind ? { kind: timeRangeKind } : undefined,
       };
 
-      const parsedGroupBy = newGroupBy
-        .split(",")
-        .map((chunk) => chunk.trim())
-        .filter((chunk) => chunk.length > 0);
-
       if (!editingDefinitionId) {
         await upsertCalculationDefinition({
           profileSlug,
@@ -392,7 +384,6 @@ export default function App() {
           operation: newOperation,
           fieldPath: newFieldPath.trim() || undefined,
           filters: nextFilters,
-          groupBy: parsedGroupBy.length > 0 ? parsedGroupBy : undefined,
           priority: newPriority,
           enabled: newEnabled,
         });
@@ -406,7 +397,6 @@ export default function App() {
               operation: definition.operation,
               fieldPath: definition.fieldPath,
               filters: definition.filters,
-              groupBy: definition.groupBy,
               normalization: definition.normalization,
               priority: definition.priority,
               enabled: definition.enabled,
@@ -419,7 +409,6 @@ export default function App() {
             operation: newOperation,
             fieldPath: newFieldPath.trim() || undefined,
             filters: nextFilters,
-            groupBy: parsedGroupBy.length > 0 ? parsedGroupBy : undefined,
             priority: newPriority,
             enabled: newEnabled,
           };
@@ -449,7 +438,6 @@ export default function App() {
     setNewFieldPath(definition.fieldPath ?? "");
     setNewPriority(definition.priority ?? 100);
     setNewEnabled(definition.enabled);
-    setNewGroupBy(Array.isArray(definition.groupBy) ? definition.groupBy.join(", ") : "");
     setRuleFilters(parseFiltersForEdit(definition.filters));
     setTimeRangeKind(definition.filters?.timeRange?.kind ?? "");
     setActiveTab("rules");
@@ -468,7 +456,6 @@ export default function App() {
           operation: definition.operation,
           fieldPath: definition.fieldPath,
           filters: definition.filters,
-          groupBy: definition.groupBy,
           normalization: definition.normalization,
           priority: definition.priority,
           enabled: definition.enabled,
@@ -685,7 +672,6 @@ export default function App() {
             <div className="grid md:grid-cols-4 gap-3">
               <input value={newFieldPath} onChange={(e) => setNewFieldPath(e.target.value)} className="px-3 py-2 rounded border border-slate-300 bg-transparent" placeholder={operationNeedsFieldPath ? "fieldPath richiesto" : "fieldPath opzionale"} />
               <input type="number" value={newPriority} onChange={(e) => setNewPriority(Number(e.target.value))} className="px-3 py-2 rounded border border-slate-300 bg-transparent" placeholder="priority" />
-              <input value={newGroupBy} onChange={(e) => setNewGroupBy(e.target.value)} className="px-3 py-2 rounded border border-slate-300 bg-transparent" placeholder="groupBy csv (opzionale)" />
               <label className="inline-flex items-center gap-2 px-3 py-2 rounded border border-slate-300">
                 <input type="checkbox" checked={newEnabled} onChange={(e) => setNewEnabled(e.target.checked)} />
                 Regola abilitata

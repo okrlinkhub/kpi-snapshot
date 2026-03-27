@@ -130,6 +130,39 @@ const snapshotItemStatusValidator = v.union(
   v.literal('error')
 )
 
+const indicatorKindValidator = v.union(
+  v.literal('base'),
+  v.literal('derived')
+)
+
+const crossProfileModeValidator = v.union(
+  v.literal('copy'),
+  v.literal('move')
+)
+
+const derivedIndicatorDependencySourceSummaryValidator = v.object({
+  sourceKey: v.string(),
+  sourceLabel: v.string(),
+  schedulePreset: schedulePresetValidator,
+  schedulePresetLabel: v.string(),
+})
+
+const derivedIndicatorBaseDependencySummaryValidator = v.object({
+  indicatorSlug: v.string(),
+  indicatorLabel: v.string(),
+  sources: v.array(derivedIndicatorDependencySourceSummaryValidator),
+})
+
+const derivedIndicatorSameSnapshotWarningValidator = v.object({
+  code: v.literal('mixed_base_source_schedule_presets'),
+  message: v.string(),
+  distinctSchedulePresets: v.array(schedulePresetValidator),
+  distinctSchedulePresetLabels: v.array(v.string()),
+  dependencyCount: v.number(),
+  sourceCount: v.number(),
+  dependencies: v.array(derivedIndicatorBaseDependencySummaryValidator),
+})
+
 type Operation = 'sum' | 'count' | 'avg' | 'min' | 'max' | 'distinct_count'
 type SourceRowInput = {
   occurredAt: number
@@ -180,8 +213,35 @@ type DerivedComputationInput = {
   sourceExportIds: Array<Id<'analyticsExports'>>
 }
 
+type SchedulePreset = Doc<'dataSources'>['schedulePreset']
+type DerivedIndicatorDependencySourceSummary = {
+  sourceKey: string
+  sourceLabel: string
+  schedulePreset: SchedulePreset
+  schedulePresetLabel: string
+}
+
+type DerivedIndicatorBaseDependencySummary = {
+  indicatorSlug: string
+  indicatorLabel: string
+  sources: DerivedIndicatorDependencySourceSummary[]
+}
+
+type DerivedIndicatorSameSnapshotWarning = {
+  code: 'mixed_base_source_schedule_presets'
+  message: string
+  distinctSchedulePresets: SchedulePreset[]
+  distinctSchedulePresetLabels: string[]
+  dependencyCount: number
+  sourceCount: number
+  dependencies: DerivedIndicatorBaseDependencySummary[]
+}
+
 type DataSourceDoc = Doc<'dataSources'>
 type DataSourceSettingDoc = Doc<'dataSourceSettings'>
+type LegacyCalculationDefinitionDoc = Doc<'calculationDefinitions'> & {
+  groupBy?: Array<string>
+}
 
 function buildIndicatorsById (indicators: Array<Doc<'indicators'>>) {
   return new Map(indicators.map((indicator) => [indicator._id, indicator] as const))
@@ -312,6 +372,10 @@ function normalizeIndicatorLabelSnapshot (label: string) {
   return label.replace(/\s+/g, ' ').trim()
 }
 
+function normalizeComparableText (value?: string | null) {
+  return value?.replace(/\s+/g, ' ').trim().toLowerCase() ?? ''
+}
+
 function normalizeReportUsageCount (value?: number) {
   return Math.max(0, Math.trunc(value ?? 0))
 }
@@ -352,6 +416,30 @@ function toFiniteNumber (value: unknown) {
     return null
   }
   return value
+}
+
+function normalizeDistinctComparableValue (value: unknown) {
+  if (value == null) {
+    return null
+  }
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null
+  }
+
+  if (
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+  ) {
+    return value
+  }
+
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.getTime() : null
+  }
+
+  return null
 }
 
 function resolveOperandValue (rowData: unknown, operand: CalculationFieldRule['rightOperand']) {
@@ -441,6 +529,18 @@ function computeOperation (
 ): number | null {
   if (operation === 'count') return rows.length
 
+  if (operation === 'distinct_count') {
+    const values = rows
+      .map((row) => normalizeDistinctComparableValue(getNestedValue(row.rowData, fieldPath)))
+      .filter((value): value is string | number | boolean | bigint => value != null)
+
+    if (values.length === 0) {
+      return null
+    }
+
+    return new Set(values).size
+  }
+
   const values = rows
     .map((row) => toFiniteNumber(getNestedValue(row.rowData, fieldPath)))
     .filter((value): value is number => value != null)
@@ -458,8 +558,6 @@ function computeOperation (
       return Math.min(...values)
     case 'max':
       return Math.max(...values)
-    case 'distinct_count':
-      return new Set(values.map((value) => String(value))).size
     default:
       return null
   }
@@ -516,6 +614,25 @@ function buildRuleHash (definition: Doc<'calculationDefinitions'>) {
   ].join('|')
 }
 
+function omitLegacyCalculationDefinitionGroupBy (
+  definition: LegacyCalculationDefinitionDoc
+) {
+  const { groupBy: _legacyGroupBy, ...nextDefinition } = definition
+  return nextDefinition
+}
+
+function buildCalculationDefinitionReplaceValue (
+  definition: LegacyCalculationDefinitionDoc
+) {
+  const {
+    _id: _definitionId,
+    _creationTime: _definitionCreationTime,
+    groupBy: _legacyGroupBy,
+    ...nextDefinition
+  } = definition
+  return nextDefinition
+}
+
 function normalizeSourceRows (rows: Array<SourceRowInput>, snapshotAt: number): Array<SourceRowInput> {
   return rows
     .filter((row) => row.occurredAt <= snapshotAt)
@@ -567,10 +684,6 @@ function runSingleDefinition (
     inputCount: filteredRows.length,
     rawResult,
     normalizedResult,
-    warningMessage:
-      definition.groupBy && definition.groupBy.length > 0
-        ? 'groupBy presente ma non ancora applicato in questa versione'
-        : undefined,
     filteredRows,
     resolvedFilters,
   }
@@ -1025,7 +1138,7 @@ async function syncDerivedDependencyCaches (
 }
 
 async function assertNoDerivedIndicatorCycles (
-  ctx: MutationCtx,
+  ctx: QueryCtx | MutationCtx,
   profileId: Id<'snapshotProfiles'>,
   nextIndicator: Pick<Doc<'derivedIndicators'>, 'slug' | 'formula'>
 ) {
@@ -1340,16 +1453,405 @@ async function getDerivedIndicatorByProfileAndSlugAndVersion (
     .unique()
 }
 
+async function listLatestIndicatorsForProfile (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>
+) {
+  const [baseRows, derivedRows] = await Promise.all([
+    ctx.db
+      .query('indicators')
+      .withIndex('by_profile', (q: any) => q.eq('profileId', profileId))
+      .collect(),
+    ctx.db
+      .query('derivedIndicators')
+      .withIndex('by_profile', (q: any) => q.eq('profileId', profileId))
+      .collect(),
+  ])
+
+  return {
+    baseIndicators: listLatestRowsBySlug(baseRows),
+    derivedIndicators: listLatestRowsBySlug(derivedRows),
+  }
+}
+
+function getIndicatorKindLabel (kind: 'base' | 'derived') {
+  return kind === 'base' ? 'indicatore base' : 'indicatore derivato'
+}
+
+function getDisplayNameLabel (kind: 'base' | 'derived') {
+  return kind === 'base' ? 'nome KPI base' : 'nome KPI derivato'
+}
+
+async function assertUniqueIndicatorIdentity (
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    profileId: Id<'snapshotProfiles'>
+    profileSlug: string
+    indicatorKind: 'base' | 'derived'
+    slug: string
+    label: string
+    description?: string
+    excludeSlug?: string
+  }
+) {
+  const { baseIndicators, derivedIndicators } = await listLatestIndicatorsForProfile(ctx, args.profileId)
+  const rows = [
+    ...baseIndicators.map((row) => ({ kind: 'base' as const, row })),
+    ...derivedIndicators.map((row) => ({ kind: 'derived' as const, row })),
+  ]
+  const normalizedLabel = normalizeComparableText(args.label)
+  const normalizedDescription = normalizeComparableText(args.description)
+
+  for (const entry of rows) {
+    if (entry.kind === args.indicatorKind && entry.row.slug === args.excludeSlug) {
+      continue
+    }
+
+    if (entry.row.slug === args.slug) {
+      throw new Error(
+        `Nel profilo '${args.profileSlug}' esiste già un ${getIndicatorKindLabel(entry.kind)} con slug '${args.slug}'`
+      )
+    }
+
+    if (
+      normalizedLabel &&
+      normalizeComparableText(entry.row.label) === normalizedLabel
+    ) {
+      throw new Error(
+        `Nel profilo '${args.profileSlug}' esiste già un ${getIndicatorKindLabel(entry.kind)} con lo stesso ${getDisplayNameLabel(args.indicatorKind)}`
+      )
+    }
+
+    if (
+      normalizedDescription &&
+      normalizeComparableText(entry.row.description) === normalizedDescription
+    ) {
+      throw new Error(
+        `Nel profilo '${args.profileSlug}' esiste già un ${getIndicatorKindLabel(entry.kind)} con la stessa descrizione`
+      )
+    }
+  }
+}
+
+async function listDefinitionsForIndicator (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  indicatorId: Id<'indicators'>
+) {
+  return await ctx.db
+    .query('calculationDefinitions')
+    .withIndex('by_profile_and_indicator', (q: any) =>
+      q.eq('profileId', profileId).eq('indicatorId', indicatorId)
+    )
+    .collect()
+}
+
+async function assertDefinitionsDataSourcesAvailable (
+  ctx: QueryCtx | MutationCtx,
+  definitions: Array<Doc<'calculationDefinitions'>>
+) {
+  for (const definition of definitions) {
+    const dataSource = await ctx.db.get(definition.dataSourceId)
+    if (!dataSource || dataSource.archivedAt) {
+      throw new Error(
+        `Data source non disponibile per la definizione '${definition._id}' collegata al KPI`
+      )
+    }
+  }
+}
+
+async function listBlockingDerivedIndicatorsForBase (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  indicatorSlug: string
+) {
+  const dependentDerivedIndicators = await ctx.db
+    .query('derivedIndicators')
+    .withIndex('by_profile', (q: any) => q.eq('profileId', profileId))
+    .collect()
+
+  return listLatestRowsBySlug(dependentDerivedIndicators).filter((derivedIndicator) =>
+    listDirectFormulaDependencies(derivedIndicator.formula).some((dependency) => (
+      dependency.indicatorKind === 'base' &&
+      dependency.indicatorSlug === indicatorSlug
+    ))
+  )
+}
+
+async function listBlockingDerivedIndicatorsForDerived (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  indicatorSlug: string
+) {
+  const dependentDerivedIndicators = await ctx.db
+    .query('derivedIndicators')
+    .withIndex('by_profile', (q: any) => q.eq('profileId', profileId))
+    .collect()
+
+  return listLatestRowsBySlug(dependentDerivedIndicators)
+    .filter((row) => row.slug !== indicatorSlug)
+    .filter((row) => listDirectFormulaDependencies(row.formula).some((dependency) => (
+      dependency.indicatorKind === 'derived' &&
+      dependency.indicatorSlug === indicatorSlug
+    )))
+}
+
+async function assertBaseIndicatorCanBeRemoved (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  indicator: Doc<'indicators'>
+) {
+  const blockingDerivedIndicators = await listBlockingDerivedIndicatorsForBase(
+    ctx,
+    profileId,
+    indicator.slug
+  )
+
+  if (blockingDerivedIndicators.length > 0) {
+    throw new Error(
+      `Impossibile eliminare '${indicator.slug}': e' usato da ${blockingDerivedIndicators
+        .map((derivedIndicator) => derivedIndicator.slug)
+        .join(', ')}`
+    )
+  }
+
+  if (normalizeReportUsageCount(indicator.reportUsageCount) > 0) {
+    throw new Error(
+      `Impossibile eliminare '${indicator.slug}': e' usato in ${normalizeReportUsageCount(indicator.reportUsageCount)} report`
+    )
+  }
+}
+
+async function assertDerivedIndicatorCanBeRemoved (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  derivedIndicator: Doc<'derivedIndicators'>
+) {
+  if (normalizeReportUsageCount(derivedIndicator.reportUsageCount) > 0) {
+    throw new Error(
+      `Impossibile eliminare '${derivedIndicator.slug}': e' usato in ${normalizeReportUsageCount(derivedIndicator.reportUsageCount)} report`
+    )
+  }
+
+  const dependentDerivedIndicators = await listBlockingDerivedIndicatorsForDerived(
+    ctx,
+    profileId,
+    derivedIndicator.slug
+  )
+
+  if (dependentDerivedIndicators.length > 0) {
+    throw new Error(
+      `Impossibile eliminare '${derivedIndicator.slug}': e' usato da ${dependentDerivedIndicators
+        .map((row) => row.slug)
+        .join(', ')}`
+    )
+  }
+}
+
+async function assertDerivedDependenciesExistInProfile (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  formula: DerivedFormula
+) {
+  const { baseIndicators, derivedIndicators } = await listLatestIndicatorsForProfile(ctx, profileId)
+  const baseIndicatorsBySlug = buildLatestRowsBySlug(baseIndicators)
+  const derivedIndicatorsBySlug = buildLatestRowsBySlug(derivedIndicators)
+
+  for (const dependency of listDirectFormulaDependencies(formula)) {
+    if (
+      dependency.indicatorKind === 'base' &&
+      !baseIndicatorsBySlug.has(dependency.indicatorSlug)
+    ) {
+      throw new Error(
+        `Dipendenza mancante nel profilo di destinazione: KPI base '${dependency.indicatorSlug}'`
+      )
+    }
+
+    if (
+      dependency.indicatorKind === 'derived' &&
+      !derivedIndicatorsBySlug.has(dependency.indicatorSlug)
+    ) {
+      throw new Error(
+        `Dipendenza mancante nel profilo di destinazione: KPI derivato '${dependency.indicatorSlug}'`
+      )
+    }
+  }
+}
+
+function listBaseDependencySlugsForFormula (
+  formula: DerivedFormula,
+  derivedIndicatorsBySlug: Map<string, Doc<'derivedIndicators'>>,
+  activeDerivedSlugs = new Set<string>()
+) {
+  const collected = new Set<string>()
+
+  for (const dependency of listDirectFormulaDependencies(formula)) {
+    if (dependency.indicatorKind === 'base') {
+      collected.add(dependency.indicatorSlug)
+      continue
+    }
+
+    if (activeDerivedSlugs.has(dependency.indicatorSlug)) {
+      continue
+    }
+
+    const derivedIndicator = derivedIndicatorsBySlug.get(dependency.indicatorSlug)
+    if (!derivedIndicator) {
+      continue
+    }
+
+    activeDerivedSlugs.add(dependency.indicatorSlug)
+    for (const baseDependencySlug of listBaseDependencySlugsForFormula(
+      derivedIndicator.formula,
+      derivedIndicatorsBySlug,
+      activeDerivedSlugs
+    )) {
+      collected.add(baseDependencySlug)
+    }
+    activeDerivedSlugs.delete(dependency.indicatorSlug)
+  }
+
+  return [...collected].sort((left, right) => left.localeCompare(right))
+}
+
+function sortSchedulePresets (schedulePresets: SchedulePreset[]) {
+  const orderByPreset: Record<SchedulePreset, number> = {
+    manual: 0,
+    daily: 1,
+    weekly_monday: 2,
+    monthly_first_day: 3,
+  }
+
+  return [...schedulePresets].sort((left, right) => orderByPreset[left] - orderByPreset[right])
+}
+
+async function buildDerivedIndicatorSameSnapshotWarning (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  formula: DerivedFormula
+): Promise<DerivedIndicatorSameSnapshotWarning | null> {
+  const { baseIndicators, derivedIndicators } = await listLatestIndicatorsForProfile(ctx, profileId)
+  const baseIndicatorsBySlug = buildLatestRowsBySlug(baseIndicators)
+  const derivedIndicatorsBySlug = buildLatestRowsBySlug(derivedIndicators)
+  const baseDependencySlugs = listBaseDependencySlugsForFormula(formula, derivedIndicatorsBySlug)
+
+  if (baseDependencySlugs.length === 0) {
+    return null
+  }
+
+  const allDefinitions = await ctx.db
+    .query('calculationDefinitions')
+    .withIndex('by_profile', (q: any) => q.eq('profileId', profileId))
+    .collect()
+
+  const enabledBaseIndicatorsById = new Map(
+    baseIndicators
+      .filter((indicator) => indicator.enabled)
+      .map((indicator) => [String(indicator._id), indicator] as const)
+  )
+  const relevantIndicatorIds = new Set(
+    baseDependencySlugs
+      .map((slug) => baseIndicatorsBySlug.get(slug))
+      .filter((indicator): indicator is Doc<'indicators'> => indicator != null)
+      .map((indicator) => String(indicator._id))
+  )
+
+  const relevantDefinitions = allDefinitions.filter((definition) => (
+    definition.enabled &&
+    relevantIndicatorIds.has(String(definition.indicatorId)) &&
+    enabledBaseIndicatorsById.has(String(definition.indicatorId))
+  ))
+
+  if (relevantDefinitions.length === 0) {
+    return null
+  }
+
+  const dataSourceIds = [...new Set(relevantDefinitions.map((definition) => String(definition.dataSourceId)))]
+  const dataSourcesById = new Map(
+    (await Promise.all(
+      dataSourceIds.map(async (dataSourceId) => await ctx.db.get(dataSourceId as Id<'dataSources'>))
+    ))
+      .filter((dataSource): dataSource is DataSourceDoc => dataSource != null && !dataSource.archivedAt)
+      .map((dataSource) => [String(dataSource._id), dataSource] as const)
+  )
+
+  const dependencySummaries = baseDependencySlugs
+    .map((baseDependencySlug) => {
+      const indicator = baseIndicatorsBySlug.get(baseDependencySlug)
+      if (!indicator || !indicator.enabled) {
+        return null
+      }
+
+      const sources = relevantDefinitions
+        .filter((definition) => String(definition.indicatorId) === String(indicator._id))
+        .map((definition) => dataSourcesById.get(String(definition.dataSourceId)))
+        .filter((dataSource): dataSource is DataSourceDoc => dataSource != null)
+        .map((dataSource) => ({
+          sourceKey: dataSource.sourceKey,
+          sourceLabel: dataSource.label || dataSource.sourceKey,
+          schedulePreset: dataSource.schedulePreset,
+          schedulePresetLabel: getSchedulePresetLabel(dataSource.schedulePreset),
+        }))
+
+      const dedupedSources = [...new Map(
+        sources.map((source) => [
+          `${source.sourceKey}:${source.schedulePreset}`,
+          source,
+        ] as const)
+      ).values()]
+        .sort((left, right) => left.sourceLabel.localeCompare(right.sourceLabel))
+
+      if (dedupedSources.length === 0) {
+        return null
+      }
+
+      return {
+        indicatorSlug: indicator.slug,
+        indicatorLabel: indicator.label,
+        sources: dedupedSources,
+      }
+    })
+    .filter((summary): summary is DerivedIndicatorBaseDependencySummary => summary != null)
+
+  const distinctSchedulePresets = sortSchedulePresets([...new Set(
+    dependencySummaries.flatMap((summary) => summary.sources.map((source) => source.schedulePreset))
+  )])
+
+  if (distinctSchedulePresets.length <= 1) {
+    return null
+  }
+
+  const distinctSchedulePresetLabels = distinctSchedulePresets.map((schedulePreset) =>
+    getSchedulePresetLabel(schedulePreset)
+  )
+  const distinctSourceKeys = [...new Set(
+    dependencySummaries.flatMap((summary) => summary.sources.map((source) => source.sourceKey))
+  )].sort((left, right) => left.localeCompare(right))
+
+  return {
+    code: 'mixed_base_source_schedule_presets',
+    message: `Questo KPI derivato usa KPI base alimentati da data source con periodicita' diverse (${distinctSchedulePresetLabels.join(', ')}). Il motore resta same snapshot only: negli snapshot parziali avviati da una singola source, se una delle altre parti manca nello stesso snapshot il derivato non verra' calcolato.`,
+    distinctSchedulePresets,
+    distinctSchedulePresetLabels,
+    dependencyCount: dependencySummaries.length,
+    sourceCount: distinctSourceKeys.length,
+    dependencies: dependencySummaries,
+  }
+}
+
 function buildDefinitionView (
   definition: Doc<'calculationDefinitions'>,
   indicatorsById: Map<Id<'indicators'>, Doc<'indicators'>>,
   dataSourcesById: Map<Id<'dataSources'>, DataSourceDoc>
 ) {
+  const definitionView = omitLegacyCalculationDefinitionGroupBy(
+    definition as LegacyCalculationDefinitionDoc
+  )
   const indicator = indicatorsById.get(definition.indicatorId)
   const source = dataSourcesById.get(definition.dataSourceId)
 
   return {
-    ...definition,
+    ...definitionView,
     indicatorSlug: indicator?.slug ?? null,
     indicatorVersion: indicator?.version ?? null,
     sourceKey: source?.sourceKey ?? null,
@@ -1387,11 +1889,18 @@ async function buildIndicatorView (
     return row && !row.archivedAt ? row : null
   }))).filter((row): row is DataSourceDoc => row !== null)
   const dataSourcesById = new Map(dataSources.map((dataSource) => [dataSource._id, dataSource] as const))
+  const sanitizedDefinitions: Array<Doc<'calculationDefinitions'>> = definitions.map(
+    (definition: Doc<'calculationDefinitions'>) => {
+      return omitLegacyCalculationDefinitionGroupBy(
+        definition as LegacyCalculationDefinitionDoc
+      ) as Doc<'calculationDefinitions'>
+    }
+  )
 
   return {
     ...indicator,
     reportUsageCount: normalizeReportUsageCount(indicator.reportUsageCount),
-    definitions: definitions.map((definition: Doc<'calculationDefinitions'>) => ({
+    definitions: sanitizedDefinitions.map((definition) => ({
       ...definition,
       sourceKey: dataSourcesById.get(definition.dataSourceId)?.sourceKey ?? null,
       sourceLabel: dataSourcesById.get(definition.dataSourceId)?.label ?? null,
@@ -2115,6 +2624,15 @@ export const upsertIndicator = mutation({
   returns: v.id('indicators'),
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug)
+    await assertUniqueIndicatorIdentity(ctx, {
+      profileId: profile._id,
+      profileSlug: profile.slug,
+      indicatorKind: 'base',
+      slug: args.slug,
+      label: args.label,
+      description: args.description,
+      excludeSlug: args.slug,
+    })
     const [existing, latest] = await Promise.all([
       getIndicatorByProfileAndSlugAndVersion(ctx, profile._id, args.slug, args.version),
       getIndicatorByProfileAndSlug(ctx, profile._id, args.slug),
@@ -2202,6 +2720,38 @@ export const getDerivedIndicatorBySlug = query({
     }
 
     return buildDerivedIndicatorView(derivedIndicator)
+  },
+})
+
+export const validateDerivedIndicatorSameSnapshotWarning = query({
+  args: {
+    profileSlug: v.string(),
+    slug: v.optional(v.string()),
+    formula: derivedFormulaValidator,
+  },
+  returns: v.object({
+    warning: v.union(derivedIndicatorSameSnapshotWarningValidator, v.null()),
+  }),
+  handler: async (ctx, args) => {
+    try {
+      const profile = await getProfileBySlug(ctx, args.profileSlug)
+      validateDerivedFormula(args.formula)
+      await assertDerivedDependenciesExistInProfile(ctx, profile._id, args.formula)
+      if (args.slug) {
+        await assertNoDerivedIndicatorCycles(ctx, profile._id, {
+          slug: args.slug,
+          formula: args.formula,
+        })
+      }
+
+      return {
+        warning: await buildDerivedIndicatorSameSnapshotWarning(ctx, profile._id, args.formula),
+      }
+    } catch {
+      return {
+        warning: null,
+      }
+    }
   },
 })
 
@@ -2379,39 +2929,8 @@ export const deleteIndicator = mutation({
     if (!indicator) {
       throw new Error(`Indicatore '${args.slug}' non trovato`)
     }
-
-    const dependentDerivedIndicators = await ctx.db
-      .query('derivedIndicators')
-      .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
-      .collect()
-    const latestDerivedIndicators = listLatestRowsBySlug(dependentDerivedIndicators)
-
-    const blockingDerivedIndicators = latestDerivedIndicators.filter((derivedIndicator) =>
-      listDirectFormulaDependencies(derivedIndicator.formula).some((dependency) => (
-        dependency.indicatorKind === 'base' &&
-        dependency.indicatorSlug === args.slug
-      ))
-    )
-
-    if (blockingDerivedIndicators.length > 0) {
-      throw new Error(
-        `Impossibile eliminare '${args.slug}': e' usato da ${blockingDerivedIndicators
-          .map((derivedIndicator) => derivedIndicator.slug)
-          .join(', ')}`
-      )
-    }
-    if (normalizeReportUsageCount(indicator.reportUsageCount) > 0) {
-      throw new Error(
-        `Impossibile eliminare '${args.slug}': e' usato in ${normalizeReportUsageCount(indicator.reportUsageCount)} report`
-      )
-    }
-
-    const definitions = await ctx.db
-      .query('calculationDefinitions')
-      .withIndex('by_profile_and_indicator', (q) =>
-        q.eq('profileId', profile._id).eq('indicatorId', indicator._id)
-      )
-      .collect()
+    await assertBaseIndicatorCanBeRemoved(ctx, profile._id, indicator)
+    const definitions = await listDefinitionsForIndicator(ctx, profile._id, indicator._id)
 
     for (const definition of definitions) {
       await ctx.db.delete(definition._id)
@@ -2435,7 +2954,6 @@ export const upsertCalculationDefinition = mutation({
     operation: operationValidator,
     fieldPath: v.optional(v.string()),
     filters: calculationFiltersValidator,
-    groupBy: v.optional(v.array(v.string())),
     normalization: v.optional(v.any()),
     priority: v.optional(v.number()),
     enabled: v.optional(v.boolean()),
@@ -2475,7 +2993,6 @@ export const upsertCalculationDefinition = mutation({
     if (existing) {
       await ctx.db.patch(existing._id, {
         filters: normalizedFilters,
-        groupBy: args.groupBy,
         normalization: args.normalization,
         priority: args.priority ?? existing.priority,
         enabled: args.enabled ?? existing.enabled,
@@ -2492,7 +3009,6 @@ export const upsertCalculationDefinition = mutation({
       operation: args.operation,
       fieldPath: args.fieldPath,
       filters: normalizedFilters,
-      groupBy: args.groupBy,
       normalization: args.normalization,
       priority: args.priority ?? 100,
       enabled: args.enabled ?? true,
@@ -2528,7 +3044,6 @@ export const replaceProfileDefinitions = mutation({
         operation: operationValidator,
         fieldPath: v.optional(v.string()),
         filters: calculationFiltersValidator,
-        groupBy: v.optional(v.array(v.string())),
         normalization: v.optional(v.any()),
         priority: v.optional(v.number()),
         enabled: v.optional(v.boolean()),
@@ -2574,7 +3089,6 @@ export const replaceProfileDefinitions = mutation({
         operation: definition.operation,
         fieldPath: definition.fieldPath,
         filters: normalizedFilters,
-        groupBy: definition.groupBy,
         normalization: definition.normalization,
         priority: definition.priority ?? 100,
         enabled: definition.enabled ?? true,
@@ -2602,10 +3116,23 @@ export const upsertDerivedIndicator = mutation({
     formula: derivedFormulaValidator,
     enabled: v.optional(v.boolean()),
   },
-  returns: v.id('derivedIndicators'),
+  returns: v.object({
+    derivedIndicatorId: v.id('derivedIndicators'),
+    warning: v.union(derivedIndicatorSameSnapshotWarningValidator, v.null()),
+  }),
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug)
     validateDerivedFormula(args.formula)
+    await assertUniqueIndicatorIdentity(ctx, {
+      profileId: profile._id,
+      profileSlug: profile.slug,
+      indicatorKind: 'derived',
+      slug: args.slug,
+      label: args.label,
+      description: args.description,
+      excludeSlug: args.slug,
+    })
+    await assertDerivedDependenciesExistInProfile(ctx, profile._id, args.formula)
     await assertNoDerivedIndicatorCycles(ctx, profile._id, {
       slug: args.slug,
       formula: args.formula,
@@ -2626,6 +3153,7 @@ export const upsertDerivedIndicator = mutation({
         .filter((dependency) => dependency.indicatorKind === 'derived')
         .map((dependency) => dependency.indicatorSlug)
     )].sort((left, right) => left.localeCompare(right))
+    const warning = await buildDerivedIndicatorSameSnapshotWarning(ctx, profile._id, args.formula)
 
     if (existing) {
       await ctx.db.patch(existing._id, {
@@ -2640,7 +3168,10 @@ export const upsertDerivedIndicator = mutation({
         updatedAt: now,
       })
       await syncDerivedDependencyCaches(ctx, profile._id)
-      return existing._id
+      return {
+        derivedIndicatorId: existing._id,
+        warning,
+      }
     }
 
     if (latest && args.version <= latest.version) {
@@ -2671,7 +3202,10 @@ export const upsertDerivedIndicator = mutation({
       createdAt: now,
     })
     await syncDerivedDependencyCaches(ctx, profile._id)
-    return insertedId
+    return {
+      derivedIndicatorId: insertedId,
+      warning,
+    }
   },
 })
 
@@ -2689,35 +3223,218 @@ export const deleteDerivedIndicator = mutation({
     if (!derivedIndicator) {
       throw new Error(`Indicatore derivato '${args.slug}' non trovato`)
     }
-    if (normalizeReportUsageCount(derivedIndicator.reportUsageCount) > 0) {
-      throw new Error(
-        `Impossibile eliminare '${args.slug}': e' usato in ${normalizeReportUsageCount(derivedIndicator.reportUsageCount)} report`
-      )
-    }
-
-    const dependentDerivedIndicators = listLatestRowsBySlug(await ctx.db
-      .query('derivedIndicators')
-      .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
-      .collect())
-      .filter((row) => row.slug !== args.slug)
-      .filter((row) => listDirectFormulaDependencies(row.formula).some((dependency) => (
-        dependency.indicatorKind === 'derived' &&
-        dependency.indicatorSlug === args.slug
-      )))
-
-    if (dependentDerivedIndicators.length > 0) {
-      throw new Error(
-        `Impossibile eliminare '${args.slug}': e' usato da ${dependentDerivedIndicators
-          .map((row) => row.slug)
-          .join(', ')}`
-      )
-    }
-
+    await assertDerivedIndicatorCanBeRemoved(ctx, profile._id, derivedIndicator)
     await ctx.db.delete(derivedIndicator._id)
     await syncDerivedDependencyCaches(ctx, profile._id)
 
     return {
       deleted: true,
+    }
+  },
+})
+
+export const transferIndicatorAcrossProfiles = mutation({
+  args: {
+    sourceProfileSlug: v.string(),
+    targetProfileSlug: v.string(),
+    indicatorKind: indicatorKindValidator,
+    slug: v.string(),
+    mode: crossProfileModeValidator,
+    targetLabel: v.optional(v.string()),
+    targetUnit: v.optional(v.string()),
+    targetCategory: v.optional(v.string()),
+    targetDescription: v.optional(v.string()),
+    targetEnabled: v.optional(v.boolean()),
+    targetFormula: v.optional(derivedFormulaValidator),
+    targetDefinition: v.optional(v.object({
+      sourceKey: v.string(),
+      operation: operationValidator,
+      fieldPath: v.optional(v.string()),
+      filters: calculationFiltersValidator,
+      normalization: v.optional(v.any()),
+      priority: v.optional(v.number()),
+      enabled: v.optional(v.boolean()),
+      ruleVersion: v.optional(v.number()),
+    })),
+  },
+  returns: v.object({
+    sourceProfileSlug: v.string(),
+    targetProfileSlug: v.string(),
+    indicatorKind: indicatorKindValidator,
+    mode: crossProfileModeValidator,
+    targetIndicatorId: v.string(),
+    definitionCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.sourceProfileSlug === args.targetProfileSlug) {
+      throw new Error('Il profilo sorgente e il profilo destinazione devono essere diversi')
+    }
+
+    const [sourceProfile, targetProfile] = await Promise.all([
+      getProfileBySlug(ctx, args.sourceProfileSlug),
+      getProfileBySlug(ctx, args.targetProfileSlug),
+    ])
+    const now = Date.now()
+
+    if (args.indicatorKind === 'base') {
+      const sourceIndicator = await getIndicatorByProfileAndSlug(ctx, sourceProfile._id, args.slug)
+      if (!sourceIndicator) {
+        throw new Error(`Indicatore '${args.slug}' non trovato nel profilo sorgente`)
+      }
+      const targetLabel = args.targetLabel ?? sourceIndicator.label
+      const targetUnit = args.targetUnit ?? sourceIndicator.unit
+      const targetCategory = args.targetCategory ?? sourceIndicator.category
+      const targetDescription = args.targetDescription ?? sourceIndicator.description
+      const targetEnabled = args.targetEnabled ?? sourceIndicator.enabled
+
+      await assertUniqueIndicatorIdentity(ctx, {
+        profileId: targetProfile._id,
+        profileSlug: targetProfile.slug,
+        indicatorKind: 'base',
+        slug: sourceIndicator.slug,
+        label: targetLabel,
+        description: targetDescription,
+      })
+
+      if (args.mode === 'move') {
+        await assertBaseIndicatorCanBeRemoved(ctx, sourceProfile._id, sourceIndicator)
+      }
+
+      const definitions = args.targetDefinition
+        ? [] as Array<Doc<'calculationDefinitions'>>
+        : await listDefinitionsForIndicator(ctx, sourceProfile._id, sourceIndicator._id)
+      await assertDefinitionsDataSourcesAvailable(ctx, definitions)
+
+      const targetIndicatorId = await ctx.db.insert('indicators', {
+        profileId: targetProfile._id,
+        slug: sourceIndicator.slug,
+        version: sourceIndicator.version,
+        label: targetLabel,
+        unit: targetUnit,
+        category: targetCategory,
+        description: targetDescription,
+        externalId: undefined,
+        reportUsageCount: 0,
+        enabled: targetEnabled,
+        createdAt: now,
+      })
+
+      if (args.targetDefinition) {
+        const targetDataSource = await getDataSourceByKey(ctx, args.targetDefinition.sourceKey)
+        if (!targetDataSource) {
+          throw new Error(`Data source '${args.targetDefinition.sourceKey}' non trovata`)
+        }
+        await ctx.db.insert('calculationDefinitions', {
+          profileId: targetProfile._id,
+          indicatorId: targetIndicatorId,
+          dataSourceId: targetDataSource._id,
+          operation: args.targetDefinition.operation,
+          fieldPath: args.targetDefinition.fieldPath,
+          filters: normalizeCalculationFilters(args.targetDefinition.filters),
+          normalization: args.targetDefinition.normalization,
+          priority: args.targetDefinition.priority ?? 100,
+          enabled: args.targetDefinition.enabled ?? true,
+          ruleVersion: args.targetDefinition.ruleVersion ?? 1,
+          createdAt: now,
+        })
+      }
+
+      for (const definition of definitions) {
+        await ctx.db.insert('calculationDefinitions', {
+          profileId: targetProfile._id,
+          indicatorId: targetIndicatorId,
+          dataSourceId: definition.dataSourceId,
+          operation: definition.operation,
+          fieldPath: definition.fieldPath,
+          filters: normalizeCalculationFilters(definition.filters),
+          normalization: definition.normalization,
+          priority: definition.priority,
+          enabled: definition.enabled,
+          ruleVersion: definition.ruleVersion,
+          createdAt: now,
+        })
+      }
+
+      if (args.mode === 'move') {
+        for (const definition of definitions) {
+          await ctx.db.delete(definition._id)
+        }
+        await ctx.db.delete(sourceIndicator._id)
+      }
+
+      return {
+        sourceProfileSlug: sourceProfile.slug,
+        targetProfileSlug: targetProfile.slug,
+        indicatorKind: args.indicatorKind,
+        mode: args.mode,
+        targetIndicatorId,
+        definitionCount: args.targetDefinition ? 1 : definitions.length,
+      }
+    }
+
+    const sourceDerivedIndicator = await getDerivedIndicatorByProfileAndSlug(ctx, sourceProfile._id, args.slug)
+    if (!sourceDerivedIndicator) {
+      throw new Error(`Indicatore derivato '${args.slug}' non trovato nel profilo sorgente`)
+    }
+    const targetLabel = args.targetLabel ?? sourceDerivedIndicator.label
+    const targetUnit = args.targetUnit ?? sourceDerivedIndicator.unit
+    const targetDescription = args.targetDescription ?? sourceDerivedIndicator.description
+    const targetFormula = args.targetFormula ?? sourceDerivedIndicator.formula
+    const targetEnabled = args.targetEnabled ?? sourceDerivedIndicator.enabled
+
+    await assertUniqueIndicatorIdentity(ctx, {
+      profileId: targetProfile._id,
+      profileSlug: targetProfile.slug,
+      indicatorKind: 'derived',
+      slug: sourceDerivedIndicator.slug,
+      label: targetLabel,
+      description: targetDescription,
+    })
+    validateDerivedFormula(targetFormula)
+    await assertDerivedDependenciesExistInProfile(ctx, targetProfile._id, targetFormula)
+    await assertNoDerivedIndicatorCycles(ctx, targetProfile._id, {
+      slug: sourceDerivedIndicator.slug,
+      formula: targetFormula,
+    })
+
+    if (args.mode === 'move') {
+      await assertDerivedIndicatorCanBeRemoved(ctx, sourceProfile._id, sourceDerivedIndicator)
+    }
+
+    const targetIndicatorId = await ctx.db.insert('derivedIndicators', {
+      profileId: targetProfile._id,
+      slug: sourceDerivedIndicator.slug,
+      version: sourceDerivedIndicator.version,
+      label: targetLabel,
+      unit: targetUnit,
+      description: targetDescription,
+      reportUsageCount: 0,
+      formula: targetFormula,
+      directBaseDependencySlugs: listDirectFormulaDependencies(targetFormula)
+        .filter((dependency) => dependency.indicatorKind === 'base')
+        .map((dependency) => dependency.indicatorSlug),
+      directDerivedDependencySlugs: listDirectFormulaDependencies(targetFormula)
+        .filter((dependency) => dependency.indicatorKind === 'derived')
+        .map((dependency) => dependency.indicatorSlug),
+      transitiveDerivedDependencySlugs: sourceDerivedIndicator.transitiveDerivedDependencySlugs,
+      enabled: targetEnabled,
+      createdAt: now,
+    })
+
+    if (args.mode === 'move') {
+      await ctx.db.delete(sourceDerivedIndicator._id)
+      await syncDerivedDependencyCaches(ctx, sourceProfile._id)
+    }
+
+    await syncDerivedDependencyCaches(ctx, targetProfile._id)
+
+    return {
+      sourceProfileSlug: sourceProfile.slug,
+      targetProfileSlug: targetProfile.slug,
+      indicatorKind: args.indicatorKind,
+      mode: args.mode,
+      targetIndicatorId,
+      definitionCount: 0,
     }
   },
 })
@@ -4706,6 +5423,57 @@ export const backfillIndicatorLabelSnapshot = mutation({
       updated,
       skippedAlreadySet,
       skippedMissingIndicator,
+    }
+  },
+})
+
+export const removeGroupByFromCalculationDefinitions = mutation({
+  args: {
+    profileSlug: v.optional(v.string()),
+    dryRun: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    scanned: v.number(),
+    updated: v.number(),
+    skippedWithoutGroupBy: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const profile = args.profileSlug ? await getProfileBySlug(ctx, args.profileSlug) : null
+    const dryRun = args.dryRun ?? false
+    const definitions = profile
+      ? await ctx.db
+        .query('calculationDefinitions')
+        .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
+        .collect()
+      : await ctx.db
+        .query('calculationDefinitions')
+        .collect()
+
+    let scanned = 0
+    let updated = 0
+    let skippedWithoutGroupBy = 0
+
+    for (const definition of definitions) {
+      scanned++
+      const legacyDefinition = definition as LegacyCalculationDefinitionDoc
+      if (!('groupBy' in legacyDefinition) || legacyDefinition.groupBy == null) {
+        skippedWithoutGroupBy++
+        continue
+      }
+
+      if (!dryRun) {
+        await ctx.db.replace(
+          definition._id,
+          buildCalculationDefinitionReplaceValue(legacyDefinition)
+        )
+      }
+      updated++
+    }
+
+    return {
+      scanned,
+      updated,
+      skippedWithoutGroupBy,
     }
   },
 })

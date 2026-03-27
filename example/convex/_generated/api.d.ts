@@ -224,11 +224,31 @@ export declare const components: {
         "mutation",
         "internal",
         {
-          indicatorKind: "base" | "derived";
-          indicatorLabel: string;
-          indicatorSlug: string;
-          indicatorUnit?: string;
+          chartKind?: "line" | "area" | "bar" | "pie";
+          description?: string;
+          layout?: {
+            emphasis: "default" | "accent" | "subtle";
+            height: "sm" | "md" | "lg";
+            width: "compact" | "wide" | "full";
+          };
+          member?: {
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            sourceProfileSlug: string;
+          };
+          members?: Array<{
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            sourceProfileSlug: string;
+          }>;
           reportId: string;
+          timeRange?: { limit: number; mode: "latest_n_snapshots" };
+          title?: string;
+          widgetType: "single_value" | "chart";
         },
         string
       >;
@@ -269,18 +289,58 @@ export declare const components: {
             updatedAt: number;
             updatedByKey?: string;
           };
-          widgets: Array<{
-            _creationTime: number;
-            _id: string;
-            createdAt: number;
-            indicatorKind: "base" | "derived";
-            indicatorLabel: string;
-            indicatorSlug: string;
-            indicatorUnit?: string;
-            order: number;
-            reportId: string;
-            updatedAt?: number;
-          }>;
+          widgets: Array<
+            | {
+                _creationTime: number;
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _creationTime: number;
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              }
+          >;
         } | null
       >;
       getReportBySlug: FunctionReference<
@@ -302,18 +362,58 @@ export declare const components: {
             updatedAt: number;
             updatedByKey?: string;
           };
-          widgets: Array<{
-            _creationTime: number;
-            _id: string;
-            createdAt: number;
-            indicatorKind: "base" | "derived";
-            indicatorLabel: string;
-            indicatorSlug: string;
-            indicatorUnit?: string;
-            order: number;
-            reportId: string;
-            updatedAt?: number;
-          }>;
+          widgets: Array<
+            | {
+                _creationTime: number;
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _creationTime: number;
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              }
+          >;
         } | null
       >;
       listReports: FunctionReference<
@@ -499,7 +599,14 @@ export declare const components: {
           processedCount: number;
           snapshotId: string;
           snapshotRunId: string;
-          status: "success" | "error";
+          status:
+            | "queued"
+            | "loading"
+            | "processing"
+            | "deriving"
+            | "freezing"
+            | "completed"
+            | "error";
         }
       >;
       deleteDerivedIndicator: FunctionReference<
@@ -550,6 +657,32 @@ export declare const components: {
         { profileSlug: string; slug: string },
         any | null
       >;
+      getIndicatorHistory: FunctionReference<
+        "query",
+        "internal",
+        {
+          indicatorKind: "base" | "derived";
+          indicatorSlug: string;
+          limit?: number;
+          profileSlug: string;
+        },
+        {
+          indicatorKind: "base" | "derived";
+          indicatorLabel: string;
+          indicatorSlug: string;
+          indicatorUnit: string | null;
+          points: Array<{
+            computedAt: number;
+            isStaleInactive: boolean;
+            recordedValue: number | null;
+            snapshotAt: number | null;
+            snapshotId: string;
+            staleReason: "indicator_disabled" | "operand_disabled" | null;
+            value: number | null;
+          }>;
+          profileSlug: string;
+        }
+      >;
       getIntegrationValueByExternalId: FunctionReference<
         "query",
         "internal",
@@ -566,10 +699,163 @@ export declare const components: {
           values: Array<any>;
         }
       >;
+      getReportWidgetData: FunctionReference<
+        "query",
+        "internal",
+        {
+          widget:
+            | {
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              };
+        },
+        any
+      >;
+      getReportWidgetsData: FunctionReference<
+        "query",
+        "internal",
+        {
+          widgets: Array<
+            | {
+                _id: string;
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                title: string;
+                updatedAt?: number;
+                widgetType: "single_value";
+              }
+            | {
+                _id: string;
+                chartKind: "line" | "area" | "bar" | "pie";
+                createdAt: number;
+                description?: string;
+                layout?: {
+                  emphasis: "default" | "accent" | "subtle";
+                  height: "sm" | "md" | "lg";
+                  width: "compact" | "wide" | "full";
+                };
+                members: Array<{
+                  indicatorKind: "base" | "derived";
+                  indicatorLabel: string;
+                  indicatorSlug: string;
+                  indicatorUnit?: string;
+                  sourceProfileId: string;
+                  sourceProfileSlug: string;
+                }>;
+                order: number;
+                reportId: string;
+                timeRange?: { limit: number; mode: "latest_n_snapshots" };
+                title: string;
+                updatedAt?: number;
+                widgetType: "chart";
+              }
+          >;
+        },
+        Array<any>
+      >;
       getSnapshotExplain: FunctionReference<
         "query",
         "internal",
         { snapshotId: string },
+        any | null
+      >;
+      getSnapshotIndicatorSlice: FunctionReference<
+        "query",
+        "internal",
+        {
+          members: Array<{
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit?: string;
+            sourceProfileSlug: string;
+          }>;
+          profileSlug?: string;
+          snapshotId?: string;
+        },
+        {
+          items: Array<{
+            computedAt: number | null;
+            indicatorKind: "base" | "derived";
+            indicatorLabel: string;
+            indicatorSlug: string;
+            indicatorUnit: string | null;
+            isStaleInactive: boolean;
+            memberKey: string;
+            recordedValue: number | null;
+            snapshotAt: number | null;
+            snapshotId: string | null;
+            sourceProfileSlug: string;
+            staleReason: "indicator_disabled" | "operand_disabled" | null;
+            value: number | null;
+          }>;
+          snapshotAt: number | null;
+          snapshotId: string | null;
+        }
+      >;
+      getSnapshotRunStatus: FunctionReference<
+        "query",
+        "internal",
+        { snapshotRunId: string },
         any | null
       >;
       getSnapshotValueEvidenceDownloadUrl: FunctionReference<
@@ -678,11 +964,28 @@ export declare const components: {
         { snapshotId: string },
         Array<any>
       >;
-      regenerateExport: FunctionReference<
+      rebuildIndicatorReportUsageCounters: FunctionReference<
         "mutation",
+        "internal",
+        { profileSlug?: string },
+        {
+          activeReportCount: number;
+          activeWidgetCount: number;
+          updatedBaseIndicatorCount: number;
+          updatedDerivedIndicatorCount: number;
+        }
+      >;
+      regenerateExport: FunctionReference<
+        "action",
         "internal",
         { exportId: string; name?: string; requestedBy?: string },
         string
+      >;
+      removeGroupByFromCalculationDefinitions: FunctionReference<
+        "mutation",
+        "internal",
+        { dryRun?: boolean; profileSlug?: string },
+        { scanned: number; skippedWithoutGroupBy: number; updated: number }
       >;
       removeProfileMember: FunctionReference<
         "mutation",
@@ -729,8 +1032,8 @@ export declare const components: {
                   | "year_to_date";
               };
             };
-            groupBy?: Array<string>;
             indicatorSlug: string;
+            indicatorVersion: number;
             normalization?: any;
             operation:
               | "sum"
@@ -748,7 +1051,7 @@ export declare const components: {
         { created: number; deleted: number }
       >;
       requestExport: FunctionReference<
-        "mutation",
+        "action",
         "internal",
         {
           clonedFromExportId?: string;
@@ -796,6 +1099,92 @@ export declare const components: {
         { definitionId: string; enabled: boolean },
         null
       >;
+      transferIndicatorAcrossProfiles: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          indicatorKind: "base" | "derived";
+          mode: "copy" | "move";
+          slug: string;
+          sourceProfileSlug: string;
+          targetCategory?: string;
+          targetDefinition?: {
+            enabled?: boolean;
+            fieldPath?: string;
+            filters: {
+              fieldRuleTree?: any;
+              fieldRules: Array<{
+                field: string;
+                op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+                rightOperand:
+                  | { kind: "literal"; value: any }
+                  | { field: string; kind: "field" };
+              }>;
+              timeRange?: {
+                kind:
+                  | "last_month"
+                  | "last_3_months"
+                  | "month_to_date"
+                  | "year_to_date";
+              };
+            };
+            normalization?: any;
+            operation:
+              | "sum"
+              | "count"
+              | "avg"
+              | "min"
+              | "max"
+              | "distinct_count";
+            priority?: number;
+            ruleVersion?: number;
+            sourceKey: string;
+          };
+          targetDescription?: string;
+          targetEnabled?: boolean;
+          targetFormula?:
+            | {
+                formulaVersion?: 1;
+                kind: "ratio" | "difference" | "sum";
+                operands: Array<{
+                  indicatorSlug: string;
+                  role?: "numerator" | "denominator" | "term";
+                  weight?: number;
+                }>;
+              }
+            | {
+                formulaVersion: 2;
+                nodes: Array<
+                  | {
+                      id: string;
+                      indicatorKind: "base" | "derived";
+                      indicatorSlug: string;
+                      type: "ref";
+                    }
+                  | { id: string; type: "constant"; value: number }
+                  | {
+                      id: string;
+                      leftNodeId: string;
+                      op: "add" | "sub" | "mul" | "div";
+                      rightNodeId: string;
+                      type: "operation";
+                    }
+                >;
+                rootNodeId: string;
+              };
+          targetLabel?: string;
+          targetProfileSlug: string;
+          targetUnit?: string;
+        },
+        {
+          definitionCount: number;
+          indicatorKind: "base" | "derived";
+          mode: "copy" | "move";
+          sourceProfileSlug: string;
+          targetIndicatorId: string;
+          targetProfileSlug: string;
+        }
+      >;
       updateSnapshotProfile: FunctionReference<
         "mutation",
         "internal",
@@ -831,8 +1220,8 @@ export declare const components: {
                 | "year_to_date";
             };
           };
-          groupBy?: Array<string>;
           indicatorSlug: string;
+          indicatorVersion: number;
           normalization?: any;
           operation: "sum" | "count" | "avg" | "min" | "max" | "distinct_count";
           priority?: number;
@@ -927,20 +1316,69 @@ export declare const components: {
         {
           description?: string;
           enabled?: boolean;
-          formula: {
-            kind: "ratio" | "difference" | "sum";
-            operands: Array<{
-              indicatorSlug: string;
-              role?: "numerator" | "denominator" | "term";
-              weight?: number;
-            }>;
-          };
+          formula:
+            | {
+                formulaVersion?: 1;
+                kind: "ratio" | "difference" | "sum";
+                operands: Array<{
+                  indicatorSlug: string;
+                  role?: "numerator" | "denominator" | "term";
+                  weight?: number;
+                }>;
+              }
+            | {
+                formulaVersion: 2;
+                nodes: Array<
+                  | {
+                      id: string;
+                      indicatorKind: "base" | "derived";
+                      indicatorSlug: string;
+                      type: "ref";
+                    }
+                  | { id: string; type: "constant"; value: number }
+                  | {
+                      id: string;
+                      leftNodeId: string;
+                      op: "add" | "sub" | "mul" | "div";
+                      rightNodeId: string;
+                      type: "operation";
+                    }
+                >;
+                rootNodeId: string;
+              };
           label: string;
           profileSlug: string;
           slug: string;
           unit?: string;
+          version: number;
         },
-        string
+        {
+          derivedIndicatorId: string;
+          warning: {
+            code: "mixed_base_source_schedule_presets";
+            dependencies: Array<{
+              indicatorLabel: string;
+              indicatorSlug: string;
+              sources: Array<{
+                schedulePreset:
+                  | "manual"
+                  | "daily"
+                  | "weekly_monday"
+                  | "monthly_first_day";
+                schedulePresetLabel: string;
+                sourceKey: string;
+                sourceLabel: string;
+              }>;
+            }>;
+            dependencyCount: number;
+            distinctSchedulePresetLabels: Array<string>;
+            distinctSchedulePresets: Array<
+              "manual" | "daily" | "weekly_monday" | "monthly_first_day"
+            >;
+            message: string;
+            sourceCount: number;
+          } | null;
+        }
       >;
       upsertIndicator: FunctionReference<
         "mutation",
@@ -954,6 +1392,7 @@ export declare const components: {
           profileSlug: string;
           slug: string;
           unit?: string;
+          version: number;
         },
         string
       >;
@@ -967,6 +1406,70 @@ export declare const components: {
           profileSlug: string;
         },
         string
+      >;
+      validateDerivedIndicatorSameSnapshotWarning: FunctionReference<
+        "query",
+        "internal",
+        {
+          formula:
+            | {
+                formulaVersion?: 1;
+                kind: "ratio" | "difference" | "sum";
+                operands: Array<{
+                  indicatorSlug: string;
+                  role?: "numerator" | "denominator" | "term";
+                  weight?: number;
+                }>;
+              }
+            | {
+                formulaVersion: 2;
+                nodes: Array<
+                  | {
+                      id: string;
+                      indicatorKind: "base" | "derived";
+                      indicatorSlug: string;
+                      type: "ref";
+                    }
+                  | { id: string; type: "constant"; value: number }
+                  | {
+                      id: string;
+                      leftNodeId: string;
+                      op: "add" | "sub" | "mul" | "div";
+                      rightNodeId: string;
+                      type: "operation";
+                    }
+                >;
+                rootNodeId: string;
+              };
+          profileSlug: string;
+          slug?: string;
+        },
+        {
+          warning: {
+            code: "mixed_base_source_schedule_presets";
+            dependencies: Array<{
+              indicatorLabel: string;
+              indicatorSlug: string;
+              sources: Array<{
+                schedulePreset:
+                  | "manual"
+                  | "daily"
+                  | "weekly_monday"
+                  | "monthly_first_day";
+                schedulePresetLabel: string;
+                sourceKey: string;
+                sourceLabel: string;
+              }>;
+            }>;
+            dependencyCount: number;
+            distinctSchedulePresetLabels: Array<string>;
+            distinctSchedulePresets: Array<
+              "manual" | "daily" | "weekly_monday" | "monthly_first_day"
+            >;
+            message: string;
+            sourceCount: number;
+          } | null;
+        }
       >;
     };
     sync: {

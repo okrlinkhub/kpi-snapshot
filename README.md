@@ -71,6 +71,12 @@ Regole operative:
 - quando `snapshotAt` e` noto, il componente legge `analyticsMaterializedRows` tramite l'indice composto `by_data_source_and_occurred_at` invece di filtrare tutto in memoria;
 - per leggere KPI con cadence diverse, l'host dovrebbe usare l'ultimo valore disponibile per indicatore invece di assumere un unico snapshot globale.
 
+Nota importante sui KPI derivati:
+
+- il motore di calcolo dei derivati resta volutamente `same snapshot only`: un derivato viene calcolato solo se tutte le sue dipendenze necessarie sono presenti nello stesso snapshot;
+- se un KPI derivato combina KPI base alimentati da `dataSources` con `schedulePreset` differenti, il componente non blocca il salvataggio ma espone un warning esplicito in fase di authoring e `upsertDerivedIndicator(...)`;
+- il warning ricorda che negli snapshot parziali avviati da una singola source (`triggerSourceKey`) il derivato puo` restare non calcolato finche' una delle parti manca nello stesso snapshot.
+
 ## Modello dati risultante
 
 - `dataSources` e` globale nell'app: ogni profilo sceglie quali source usare quando definisce KPI o export custom.
@@ -275,6 +281,7 @@ export const {
   upsertDataSource,
   upsertIndicator,
   upsertCalculationDefinition,
+  transferIndicatorAcrossProfiles,
   listSnapshotValues,
   getSnapshotValueEvidenceDownloadUrl,
 } = exposeApi(components.kpiSnapshot, {
@@ -449,7 +456,7 @@ Funzioni principali esposte dal helper:
 - lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `getSnapshotRunStatus`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
 - report builder: `listReports`, `getReport`, `getReportBySlug`, `createReport`, `archiveReport`, `updateReportMeta`, `addReportWidget`, `removeReportWidget`, `reorderReportWidgets`, `getReportWidgetData`, `getReportWidgetsData`
 - chart data: `getIndicatorHistory`, `getSnapshotIndicatorSlice`
-- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `rebuildIndicatorReportUsageCounters`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `replaceProfileDefinitions`, `toggleCalculation`
+- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `rebuildIndicatorReportUsageCounters`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `transferIndicatorAcrossProfiles`, `replaceProfileDefinitions`, `toggleCalculation`
 
 Nota migrazione:
 
@@ -525,6 +532,20 @@ In questo modo:
 - gli snapshot futuri usano la versione corrente;
 - i valori di sync possono conservare i metadati della versione usata al momento del calcolo.
 - `profileSlug` per limitare il backfill a un profilo
+
+### Copy o move tra profili
+
+Il componente espone `transferIndicatorAcrossProfiles(...)` per copiare o spostare un KPI base o derivato tra due profili diversi.
+
+Vincoli importanti:
+
+- `mode: "copy"` lascia invariato il sorgente e crea il KPI nel profilo di destinazione;
+- `mode: "move"` esegue prima tutte le validazioni e rimuove il sorgente solo se la copia e` valida;
+- per KPI base vengono copiate anche tutte le `calculationDefinitions` collegate;
+- per KPI derivati, tutte le dipendenze devono gia` esistere nel profilo target;
+- il componente blocca sempre collisioni di `slug`;
+- il componente blocca anche collisioni di `label` e `description` tra KPI base e derivati nello stesso profilo, per evitare ambiguita` in UI;
+- non vengono mai applicate rinominazioni automatiche silenziose.
 
 ## Ricette regole pronte
 

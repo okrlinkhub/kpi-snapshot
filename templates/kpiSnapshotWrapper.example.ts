@@ -41,6 +41,7 @@ export const {
   upsertIndicator,
   upsertCalculationDefinition,
   upsertDerivedIndicator,
+  transferIndicatorAcrossProfiles,
   replaceProfileDefinitions,
   toggleCalculation,
   getIndicatorBySlug,

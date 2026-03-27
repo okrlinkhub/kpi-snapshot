@@ -1026,6 +1026,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         string,
         Name
       >;
+      removeGroupByFromCalculationDefinitions: FunctionReference<
+        "mutation",
+        "internal",
+        { dryRun?: boolean; profileSlug?: string },
+        { scanned: number; skippedWithoutGroupBy: number; updated: number },
+        Name
+      >;
       removeProfileMember: FunctionReference<
         "mutation",
         "internal",
@@ -1073,7 +1080,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
                   | "year_to_date";
               };
             };
-            groupBy?: Array<string>;
             indicatorSlug: string;
             indicatorVersion: number;
             normalization?: any;
@@ -1147,6 +1153,93 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         null,
         Name
       >;
+      transferIndicatorAcrossProfiles: FunctionReference<
+        "mutation",
+        "internal",
+        {
+          indicatorKind: "base" | "derived";
+          mode: "copy" | "move";
+          slug: string;
+          sourceProfileSlug: string;
+          targetCategory?: string;
+          targetDefinition?: {
+            enabled?: boolean;
+            fieldPath?: string;
+            filters: {
+              fieldRuleTree?: any;
+              fieldRules: Array<{
+                field: string;
+                op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in";
+                rightOperand:
+                  | { kind: "literal"; value: any }
+                  | { field: string; kind: "field" };
+              }>;
+              timeRange?: {
+                kind:
+                  | "last_month"
+                  | "last_3_months"
+                  | "month_to_date"
+                  | "year_to_date";
+              };
+            };
+            normalization?: any;
+            operation:
+              | "sum"
+              | "count"
+              | "avg"
+              | "min"
+              | "max"
+              | "distinct_count";
+            priority?: number;
+            ruleVersion?: number;
+            sourceKey: string;
+          };
+          targetDescription?: string;
+          targetEnabled?: boolean;
+          targetFormula?:
+            | {
+                formulaVersion?: 1;
+                kind: "ratio" | "difference" | "sum";
+                operands: Array<{
+                  indicatorSlug: string;
+                  role?: "numerator" | "denominator" | "term";
+                  weight?: number;
+                }>;
+              }
+            | {
+                formulaVersion: 2;
+                nodes: Array<
+                  | {
+                      id: string;
+                      indicatorKind: "base" | "derived";
+                      indicatorSlug: string;
+                      type: "ref";
+                    }
+                  | { id: string; type: "constant"; value: number }
+                  | {
+                      id: string;
+                      leftNodeId: string;
+                      op: "add" | "sub" | "mul" | "div";
+                      rightNodeId: string;
+                      type: "operation";
+                    }
+                >;
+                rootNodeId: string;
+              };
+          targetLabel?: string;
+          targetProfileSlug: string;
+          targetUnit?: string;
+        },
+        {
+          definitionCount: number;
+          indicatorKind: "base" | "derived";
+          mode: "copy" | "move";
+          sourceProfileSlug: string;
+          targetIndicatorId: string;
+          targetProfileSlug: string;
+        },
+        Name
+      >;
       updateSnapshotProfile: FunctionReference<
         "mutation",
         "internal",
@@ -1183,7 +1276,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
                 | "year_to_date";
             };
           };
-          groupBy?: Array<string>;
           indicatorSlug: string;
           indicatorVersion: number;
           normalization?: any;
@@ -1319,7 +1411,33 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           unit?: string;
           version: number;
         },
-        string,
+        {
+          derivedIndicatorId: string;
+          warning: {
+            code: "mixed_base_source_schedule_presets";
+            dependencies: Array<{
+              indicatorLabel: string;
+              indicatorSlug: string;
+              sources: Array<{
+                schedulePreset:
+                  | "manual"
+                  | "daily"
+                  | "weekly_monday"
+                  | "monthly_first_day";
+                schedulePresetLabel: string;
+                sourceKey: string;
+                sourceLabel: string;
+              }>;
+            }>;
+            dependencyCount: number;
+            distinctSchedulePresetLabels: Array<string>;
+            distinctSchedulePresets: Array<
+              "manual" | "daily" | "weekly_monday" | "monthly_first_day"
+            >;
+            message: string;
+            sourceCount: number;
+          } | null;
+        },
         Name
       >;
       upsertIndicator: FunctionReference<
@@ -1349,6 +1467,71 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           profileSlug: string;
         },
         string,
+        Name
+      >;
+      validateDerivedIndicatorSameSnapshotWarning: FunctionReference<
+        "query",
+        "internal",
+        {
+          formula:
+            | {
+                formulaVersion?: 1;
+                kind: "ratio" | "difference" | "sum";
+                operands: Array<{
+                  indicatorSlug: string;
+                  role?: "numerator" | "denominator" | "term";
+                  weight?: number;
+                }>;
+              }
+            | {
+                formulaVersion: 2;
+                nodes: Array<
+                  | {
+                      id: string;
+                      indicatorKind: "base" | "derived";
+                      indicatorSlug: string;
+                      type: "ref";
+                    }
+                  | { id: string; type: "constant"; value: number }
+                  | {
+                      id: string;
+                      leftNodeId: string;
+                      op: "add" | "sub" | "mul" | "div";
+                      rightNodeId: string;
+                      type: "operation";
+                    }
+                >;
+                rootNodeId: string;
+              };
+          profileSlug: string;
+          slug?: string;
+        },
+        {
+          warning: {
+            code: "mixed_base_source_schedule_presets";
+            dependencies: Array<{
+              indicatorLabel: string;
+              indicatorSlug: string;
+              sources: Array<{
+                schedulePreset:
+                  | "manual"
+                  | "daily"
+                  | "weekly_monday"
+                  | "monthly_first_day";
+                schedulePresetLabel: string;
+                sourceKey: string;
+                sourceLabel: string;
+              }>;
+            }>;
+            dependencyCount: number;
+            distinctSchedulePresetLabels: Array<string>;
+            distinctSchedulePresets: Array<
+              "manual" | "daily" | "weekly_monday" | "monthly_first_day"
+            >;
+            message: string;
+            sourceCount: number;
+          } | null;
+        },
         Name
       >;
     };

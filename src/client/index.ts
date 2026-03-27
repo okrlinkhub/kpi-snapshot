@@ -287,6 +287,20 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    validateDerivedIndicatorSameSnapshotWarning: queryGeneric({
+      args: {
+        profileSlug: v.string(),
+        slug: v.optional(v.string()),
+        formula: derivedFormulaValidator,
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: "read", entityType: "definition" });
+        }
+        return await ctx.runQuery(component.snapshotEngine.validateDerivedIndicatorSameSnapshotWarning, args);
+      },
+    }),
+
     listReports: queryGeneric({
       args: {
         profileSlug: v.optional(v.string()),
@@ -731,7 +745,6 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         ),
         fieldPath: v.optional(v.string()),
         filters: calculationFiltersValidator,
-        groupBy: v.optional(v.array(v.string())),
         normalization: v.optional(v.any()),
         priority: v.optional(v.number()),
         enabled: v.optional(v.boolean()),
@@ -745,6 +758,19 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           component.snapshotEngine.upsertCalculationDefinition,
           args
         );
+      },
+    }),
+
+    removeGroupByFromCalculationDefinitions: mutationGeneric({
+      args: {
+        profileSlug: v.optional(v.string()),
+        dryRun: v.optional(v.boolean()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: 'update', entityType: 'definition' })
+        }
+        return await ctx.runMutation(component.snapshotEngine.removeGroupByFromCalculationDefinitions, args)
       },
     }),
 
@@ -764,6 +790,45 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
           await options.auth(ctx, { type: "insert", entityType: "definition" });
         }
         return await ctx.runMutation(component.snapshotEngine.upsertDerivedIndicator, args);
+      },
+    }),
+
+    transferIndicatorAcrossProfiles: mutationGeneric({
+      args: {
+        sourceProfileSlug: v.string(),
+        targetProfileSlug: v.string(),
+        indicatorKind: v.union(v.literal('base'), v.literal('derived')),
+        slug: v.string(),
+        mode: v.union(v.literal('copy'), v.literal('move')),
+        targetLabel: v.optional(v.string()),
+        targetUnit: v.optional(v.string()),
+        targetCategory: v.optional(v.string()),
+        targetDescription: v.optional(v.string()),
+        targetEnabled: v.optional(v.boolean()),
+        targetFormula: v.optional(derivedFormulaValidator),
+        targetDefinition: v.optional(v.object({
+          sourceKey: v.string(),
+          operation: v.union(
+            v.literal('sum'),
+            v.literal('count'),
+            v.literal('avg'),
+            v.literal('min'),
+            v.literal('max'),
+            v.literal('distinct_count')
+          ),
+          fieldPath: v.optional(v.string()),
+          filters: calculationFiltersValidator,
+          normalization: v.optional(v.any()),
+          priority: v.optional(v.number()),
+          enabled: v.optional(v.boolean()),
+          ruleVersion: v.optional(v.number()),
+        })),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: 'update', entityType: 'indicator' });
+        }
+        return await ctx.runMutation(component.snapshotEngine.transferIndicatorAcrossProfiles, args)
       },
     }),
 
@@ -795,7 +860,6 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
             ),
             fieldPath: v.optional(v.string()),
             filters: calculationFiltersValidator,
-            groupBy: v.optional(v.array(v.string())),
             normalization: v.optional(v.any()),
             priority: v.optional(v.number()),
             enabled: v.optional(v.boolean()),

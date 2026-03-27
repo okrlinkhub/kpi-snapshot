@@ -311,7 +311,6 @@ export default defineSchema({
     ),
     fieldPath: v.optional(v.string()),
     filters: calculationFiltersValidator,
-    groupBy: v.optional(v.array(v.string())),
     normalization: v.optional(v.any()),
     priority: v.number(),
     enabled: v.boolean(),
