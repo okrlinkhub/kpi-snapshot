@@ -377,6 +377,12 @@ export default defineSchema({
   })
     .index("by_profile", ["profileId"])
     .index("by_profile_and_snapshot_at", ["profileId", "snapshotAt"])
+    .index("by_profile_and_trigger_source_key_and_status_and_snapshot_at", [
+      "profileId",
+      "triggerSourceKey",
+      "status",
+      "snapshotAt",
+    ])
     .index("by_status", ["status"]),
 
   snapshotRuns: defineTable({
@@ -518,6 +524,8 @@ export default defineSchema({
     unit: v.optional(v.string()),
     description: v.optional(v.string()),
     reportUsageCount: v.optional(v.number()),
+    lockedSourceKey: v.optional(v.string()),
+    lockedDataSourceId: v.optional(v.id("dataSources")),
     formula: derivedFormulaValidator,
     directBaseDependencySlugs: v.optional(v.array(v.string())),
     directDerivedDependencySlugs: v.optional(v.array(v.string())),
@@ -527,7 +535,8 @@ export default defineSchema({
     updatedAt: v.optional(v.number()),
   })
     .index("by_profile", ["profileId"])
-    .index("by_profile_and_slug_and_version", ["profileId", "slug", "version"]),
+    .index("by_profile_and_slug_and_version", ["profileId", "slug", "version"])
+    .index("by_profile_and_locked_source_key", ["profileId", "lockedSourceKey"]),
 
   derivedSnapshotValues: defineTable({
     snapshotId: v.id("snapshots"),
@@ -569,6 +578,9 @@ export default defineSchema({
     slug: v.string(),
     name: v.string(),
     description: v.optional(v.string()),
+    lockedSourceKey: v.optional(v.string()),
+    lockedDataSourceId: v.optional(v.id("dataSources")),
+    pinnedSnapshotId: v.optional(v.id("snapshots")),
     isArchived: v.boolean(),
     createdByKey: v.optional(v.string()),
     updatedByKey: v.optional(v.string()),
@@ -578,6 +590,7 @@ export default defineSchema({
     .index("by_profile", ["profileId"])
     .index("by_slug", ["slug"])
     .index("by_is_archived", ["isArchived"])
+    .index("by_profile_and_locked_source_key", ["profileId", "lockedSourceKey"])
     .index("by_profile_and_is_archived", ["profileId", "isArchived"]),
 
   reportWidgets: defineTable(storedReportWidgetValidator)

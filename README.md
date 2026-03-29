@@ -112,6 +112,13 @@ Query runtime dedicate:
 - `getSnapshotIndicatorSlice`: confronto coerente di piu` indicatori nello stesso snapshot
 - `getReportWidgetData` e `getReportWidgetsData`: adapter pronti per UI/report builder
 
+Export report condiviso:
+
+- il package espone helper puri `buildReportExportDocument(...)`, `buildReportExportCsv(...)` e `buildReportExportFilename(...)`
+- questi helper trasformano `AnalyticsReportDetail` + `AnalyticsReportWidgetData[]` in un payload normalizzato riusabile da consumer diversi
+- il CSV del report nasce da `flatRows` coerenti tra widget `single_value`, `pie` e `timeline`
+- il PDF non viene generato nel package: ogni host puo` riusare lo stesso payload per produrre un documento locale senza dipendere dalla UI React specifica
+
 Normalizzazione valori:
 
 - se `indicatorUnit` e` `%`, le query runtime orientate alla UI (`getIndicatorHistory`, `getSnapshotIndicatorSlice`, `getReportWidgetData`, `getReportWidgetsData`) moltiplicano automaticamente il valore per `100` nel payload di trasporto;

@@ -250,7 +250,9 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           createdByKey?: string;
           description?: string;
+          lockedSourceKey: string;
           name: string;
+          pinnedSnapshotId?: string;
           profileSlug: string;
           slug?: string;
         },
@@ -269,7 +271,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             createdByKey?: string;
             description?: string;
             isArchived: boolean;
+            lockedDataSourceId: string | null;
+            lockedSourceKey?: string;
+            lockedSourceLabel: string | null;
             name: string;
+            pinnedSnapshotAt: number | null;
+            pinnedSnapshotId: string | null;
             profileId: string;
             profileSlug: string;
             slug: string;
@@ -343,7 +350,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             createdByKey?: string;
             description?: string;
             isArchived: boolean;
+            lockedDataSourceId: string | null;
+            lockedSourceKey?: string;
+            lockedSourceLabel: string | null;
             name: string;
+            pinnedSnapshotAt: number | null;
+            pinnedSnapshotId: string | null;
             profileId: string;
             profileSlug: string;
             slug: string;
@@ -416,7 +428,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           createdByKey?: string;
           description?: string;
           isArchived: boolean;
+          lockedDataSourceId: string | null;
+          lockedSourceKey?: string;
+          lockedSourceLabel: string | null;
           name: string;
+          pinnedSnapshotAt: number | null;
+          pinnedSnapshotId: string | null;
           profileId: string;
           profileSlug: string;
           slug: string;
@@ -445,12 +462,21 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           description?: string;
           isArchived?: boolean;
+          lockedSourceKey?: string;
           name?: string;
+          pinnedSnapshotId?: string;
           reportId: string;
           slug?: string;
           updatedByKey?: string;
         },
         { reportId: string; slug: string },
+        Name
+      >;
+      updateReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        { description?: string; title?: string; widgetId: string },
+        null,
         Name
       >;
     };
@@ -725,6 +751,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         {
+          pinnedSnapshotId?: string;
           widget:
             | {
                 _id: string;
@@ -782,6 +809,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "query",
         "internal",
         {
+          pinnedSnapshotId?: string;
           widgets: Array<
             | {
                 _id: string;
@@ -958,6 +986,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         any,
         Name
       >;
+      listProfileIndicatorsBySource: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string; sourceKey: string },
+        { indicators: Array<any>; profileSlug: string; sourceKey: string },
+        Name
+      >;
       listProfileMembers: FunctionReference<
         "query",
         "internal",
@@ -996,7 +1031,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       listSnapshots: FunctionReference<
         "query",
         "internal",
-        { limit?: number; profileSlug?: string },
+        { limit?: number; profileSlug?: string; sourceKey?: string },
         Array<any>,
         Name
       >;
@@ -1227,6 +1262,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
                 rootNodeId: string;
               };
           targetLabel?: string;
+          targetLockedSourceKey?: string;
           targetProfileSlug: string;
           targetUnit?: string;
         },
@@ -1406,6 +1442,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
                 rootNodeId: string;
               };
           label: string;
+          lockedSourceKey: string;
           profileSlug: string;
           slug: string;
           unit?: string;
@@ -1503,6 +1540,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
                 >;
                 rootNodeId: string;
               };
+          lockedSourceKey?: string;
           profileSlug: string;
           slug?: string;
         },

@@ -264,7 +264,9 @@ export declare const components: {
         {
           createdByKey?: string;
           description?: string;
+          lockedSourceKey: string;
           name: string;
+          pinnedSnapshotId?: string;
           profileSlug: string;
           slug?: string;
         },
@@ -282,7 +284,12 @@ export declare const components: {
             createdByKey?: string;
             description?: string;
             isArchived: boolean;
+            lockedDataSourceId: string | null;
+            lockedSourceKey?: string;
+            lockedSourceLabel: string | null;
             name: string;
+            pinnedSnapshotAt: number | null;
+            pinnedSnapshotId: string | null;
             profileId: string;
             profileSlug: string;
             slug: string;
@@ -355,7 +362,12 @@ export declare const components: {
             createdByKey?: string;
             description?: string;
             isArchived: boolean;
+            lockedDataSourceId: string | null;
+            lockedSourceKey?: string;
+            lockedSourceLabel: string | null;
             name: string;
+            pinnedSnapshotAt: number | null;
+            pinnedSnapshotId: string | null;
             profileId: string;
             profileSlug: string;
             slug: string;
@@ -427,7 +439,12 @@ export declare const components: {
           createdByKey?: string;
           description?: string;
           isArchived: boolean;
+          lockedDataSourceId: string | null;
+          lockedSourceKey?: string;
+          lockedSourceLabel: string | null;
           name: string;
+          pinnedSnapshotAt: number | null;
+          pinnedSnapshotId: string | null;
           profileId: string;
           profileSlug: string;
           slug: string;
@@ -453,12 +470,20 @@ export declare const components: {
         {
           description?: string;
           isArchived?: boolean;
+          lockedSourceKey?: string;
           name?: string;
+          pinnedSnapshotId?: string;
           reportId: string;
           slug?: string;
           updatedByKey?: string;
         },
         { reportId: string; slug: string }
+      >;
+      updateReportWidget: FunctionReference<
+        "mutation",
+        "internal",
+        { description?: string; title?: string; widgetId: string },
+        null
       >;
     };
     schemaRegistry: {
@@ -703,6 +728,7 @@ export declare const components: {
         "query",
         "internal",
         {
+          pinnedSnapshotId?: string;
           widget:
             | {
                 _id: string;
@@ -759,6 +785,7 @@ export declare const components: {
         "query",
         "internal",
         {
+          pinnedSnapshotId?: string;
           widgets: Array<
             | {
                 _id: string;
@@ -922,6 +949,12 @@ export declare const components: {
         { profileSlug: string },
         any
       >;
+      listProfileIndicatorsBySource: FunctionReference<
+        "query",
+        "internal",
+        { profileSlug: string; sourceKey: string },
+        { indicators: Array<any>; profileSlug: string; sourceKey: string }
+      >;
       listProfileMembers: FunctionReference<
         "query",
         "internal",
@@ -955,7 +988,7 @@ export declare const components: {
       listSnapshots: FunctionReference<
         "query",
         "internal",
-        { limit?: number; profileSlug?: string },
+        { limit?: number; profileSlug?: string; sourceKey?: string },
         Array<any>
       >;
       listSnapshotValues: FunctionReference<
@@ -1173,6 +1206,7 @@ export declare const components: {
                 rootNodeId: string;
               };
           targetLabel?: string;
+          targetLockedSourceKey?: string;
           targetProfileSlug: string;
           targetUnit?: string;
         },
@@ -1347,6 +1381,7 @@ export declare const components: {
                 rootNodeId: string;
               };
           label: string;
+          lockedSourceKey: string;
           profileSlug: string;
           slug: string;
           unit?: string;
@@ -1441,6 +1476,7 @@ export declare const components: {
                 >;
                 rootNodeId: string;
               };
+          lockedSourceKey?: string;
           profileSlug: string;
           slug?: string;
         },

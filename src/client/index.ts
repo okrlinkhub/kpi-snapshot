@@ -56,6 +56,21 @@ export type {
   ReportWidgetType,
   SingleValueReportWidget,
 } from "../shared/reportWidgets.js";
+export type {
+  BuildReportExportDocumentArgs,
+  ReportExportCellValue,
+  ReportExportDetail,
+  ReportExportDocument,
+  ReportExportFlatRow,
+  ReportExportSection,
+  ReportExportWidgetData,
+} from "../shared/reportExport.js";
+export {
+  buildReportExportCsv,
+  buildReportExportDocument,
+  buildReportExportFilename,
+  getReportExportFlatRowColumns,
+} from "../shared/reportExport.js";
 
 export type AnalyticsReportDetail = {
   report: AnalyticsReportSummary
@@ -344,6 +359,19 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    listProfileIndicatorsBySource: queryGeneric({
+      args: {
+        profileSlug: v.string(),
+        sourceKey: v.string(),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: 'read', entityType: 'indicator' })
+        }
+        return await ctx.runQuery(component.snapshotEngine.listProfileIndicatorsBySource, args)
+      },
+    }),
+
     listDataSources: queryGeneric({
       args: { includeDisabled: v.optional(v.boolean()) },
       handler: async (ctx, args) => {
@@ -391,7 +419,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
     }),
 
     listSnapshots: queryGeneric({
-      args: { profileSlug: v.optional(v.string()), limit: v.optional(v.number()) },
+      args: { profileSlug: v.optional(v.string()), sourceKey: v.optional(v.string()), limit: v.optional(v.number()) },
       handler: async (ctx, args) => {
         if (options?.auth) {
           await options.auth(ctx, { type: "read", entityType: "snapshot" });
@@ -483,6 +511,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
     getReportWidgetData: queryGeneric({
       args: {
         widget: transportReportWidgetValidator,
+        pinnedSnapshotId: v.optional(v.string()),
       },
       handler: async (ctx, args) => {
         if (options?.auth) {
@@ -495,6 +524,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
     getReportWidgetsData: queryGeneric({
       args: {
         widgets: v.array(transportReportWidgetValidator),
+        pinnedSnapshotId: v.optional(v.string()),
       },
       handler: async (ctx, args) => {
         if (options?.auth) {
@@ -558,6 +588,8 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         name: v.string(),
         description: v.optional(v.string()),
         slug: v.optional(v.string()),
+        lockedSourceKey: v.string(),
+        pinnedSnapshotId: v.optional(v.string()),
         createdByKey: v.optional(v.string()),
       },
       handler: async (ctx, args) => {
@@ -587,6 +619,8 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         name: v.optional(v.string()),
         description: v.optional(v.string()),
         slug: v.optional(v.string()),
+        lockedSourceKey: v.optional(v.string()),
+        pinnedSnapshotId: v.optional(v.string()),
         isArchived: v.optional(v.boolean()),
         updatedByKey: v.optional(v.string()),
       },
@@ -782,6 +816,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         label: v.string(),
         unit: v.optional(v.string()),
         description: v.optional(v.string()),
+        lockedSourceKey: v.string(),
         formula: derivedFormulaValidator,
         enabled: v.optional(v.boolean()),
       },
@@ -805,6 +840,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         targetCategory: v.optional(v.string()),
         targetDescription: v.optional(v.string()),
         targetEnabled: v.optional(v.boolean()),
+        targetLockedSourceKey: v.optional(v.string()),
         targetFormula: v.optional(derivedFormulaValidator),
         targetDefinition: v.optional(v.object({
           sourceKey: v.string(),

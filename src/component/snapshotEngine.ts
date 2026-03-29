@@ -9,6 +9,10 @@ import {
   resolveCalculationFilters,
 } from './lib/calculationFilters.js'
 import {
+  createProfileIndicatorSourceResolver,
+  type IndicatorSourceBinding,
+} from './lib/indicatorSourceBinding.js'
+import {
   derivedFormulaValidator,
   getDerivedFormulaKind,
   isExpressionDerivedFormula,
@@ -1410,6 +1414,20 @@ async function getIndicatorByProfileAndSlug (
   return rows[0] ?? null
 }
 
+async function listIndicatorsByProfileAndSlug (
+  ctx: any,
+  profileId: Id<'snapshotProfiles'>,
+  slug: string
+) {
+  return await ctx.db
+    .query('indicators')
+    .withIndex('by_profile_and_slug_and_version', (q: any) =>
+      q.eq('profileId', profileId).eq('slug', slug)
+    )
+    .order('desc')
+    .collect()
+}
+
 async function getIndicatorByProfileAndSlugAndVersion (
   ctx: any,
   profileId: Id<'snapshotProfiles'>,
@@ -1437,6 +1455,20 @@ async function getDerivedIndicatorByProfileAndSlug (
     .order('desc')
     .take(1)
   return rows[0] ?? null
+}
+
+async function listDerivedIndicatorsByProfileAndSlug (
+  ctx: any,
+  profileId: Id<'snapshotProfiles'>,
+  slug: string
+) {
+  return await ctx.db
+    .query('derivedIndicators')
+    .withIndex('by_profile_and_slug_and_version', (q: any) =>
+      q.eq('profileId', profileId).eq('slug', slug)
+    )
+    .order('desc')
+    .collect()
 }
 
 async function getDerivedIndicatorByProfileAndSlugAndVersion (
@@ -1839,6 +1871,45 @@ async function buildDerivedIndicatorSameSnapshotWarning (
   }
 }
 
+async function assertDerivedIndicatorLockedSourceCompatibility (
+  ctx: QueryCtx | MutationCtx,
+  profileId: Id<'snapshotProfiles'>,
+  formula: DerivedFormula,
+  lockedSourceKey: string
+) {
+  const sourceResolver = await createProfileIndicatorSourceResolver(ctx, profileId)
+  const dependencyBindings = listDirectFormulaDependencies(formula).map((dependency) => (
+    dependency.indicatorKind === 'base'
+      ? sourceResolver.resolveBaseBinding({ indicatorSlug: dependency.indicatorSlug })
+      : sourceResolver.resolveDerivedBinding({ indicatorSlug: dependency.indicatorSlug })
+  ))
+
+  const sourceKeys = [...new Set(dependencyBindings.flatMap((binding) => binding.sourceKeys))]
+
+  if (sourceKeys.length === 0) {
+    throw new Error('Il KPI derivato deve dipendere da indicatori con una data source valida')
+  }
+
+  if (sourceKeys.length > 1) {
+    throw new Error('Il KPI derivato non puo` combinare indicatori provenienti da data source diverse')
+  }
+
+  if (sourceKeys[0] !== lockedSourceKey) {
+    throw new Error(`Il KPI derivato puo' usare solo indicatori compatibili con la data source '${lockedSourceKey}'`)
+  }
+
+  const dataSource = sourceResolver.dataSourcesByKey.get(lockedSourceKey) ?? null
+  if (!dataSource) {
+    throw new Error(`Data source '${lockedSourceKey}' non trovata o non piu' disponibile`)
+  }
+
+  return {
+    sourceResolver,
+    sourceKey: sourceKeys[0],
+    dataSource,
+  }
+}
+
 function buildDefinitionView (
   definition: Doc<'calculationDefinitions'>,
   indicatorsById: Map<Id<'indicators'>, Doc<'indicators'>>,
@@ -1862,17 +1933,42 @@ function buildDefinitionView (
   }
 }
 
-function buildDerivedIndicatorView (derivedIndicator: Doc<'derivedIndicators'>) {
+function buildDerivedIndicatorView (
+  derivedIndicator: Doc<'derivedIndicators'>,
+  sourceBinding?: IndicatorSourceBinding
+) {
   return {
     ...derivedIndicator,
     reportUsageCount: normalizeReportUsageCount(derivedIndicator.reportUsageCount),
+    sourceBinding: sourceBinding ? buildSourceBindingView(sourceBinding) : undefined,
+    lockedSourceKey: sourceBinding?.lockedSourceKey ?? derivedIndicator.lockedSourceKey ?? null,
+    lockedDataSourceId: sourceBinding?.lockedDataSourceId
+      ? String(sourceBinding.lockedDataSourceId)
+      : derivedIndicator.lockedDataSourceId
+        ? String(derivedIndicator.lockedDataSourceId)
+        : null,
+  }
+}
+
+function buildSourceBindingView (
+  binding: IndicatorSourceBinding
+) {
+  return {
+    status: binding.status,
+    sourceKeys: binding.sourceKeys,
+    sourceLabels: binding.sourceLabels,
+    lockedSourceKey: binding.lockedSourceKey,
+    lockedDataSourceId: binding.lockedDataSourceId ? String(binding.lockedDataSourceId) : null,
+    isEligible: binding.isEligible,
+    reason: binding.reason,
   }
 }
 
 async function buildIndicatorView (
   ctx: any,
   profileId: Id<'snapshotProfiles'>,
-  indicator: Doc<'indicators'>
+  indicator: Doc<'indicators'>,
+  sourceResolver?: Awaited<ReturnType<typeof createProfileIndicatorSourceResolver>>
 ) {
   const definitions = await ctx.db
     .query('calculationDefinitions')
@@ -1896,10 +1992,15 @@ async function buildIndicatorView (
       ) as Doc<'calculationDefinitions'>
     }
   )
+  const effectiveSourceResolver = sourceResolver ?? await createProfileIndicatorSourceResolver(ctx, profileId)
+  const sourceBinding = effectiveSourceResolver.resolveBaseBinding({ indicatorId: indicator._id })
 
   return {
     ...indicator,
     reportUsageCount: normalizeReportUsageCount(indicator.reportUsageCount),
+    sourceBinding: buildSourceBindingView(sourceBinding),
+    lockedSourceKey: sourceBinding.lockedSourceKey,
+    lockedDataSourceId: sourceBinding.lockedDataSourceId ? String(sourceBinding.lockedDataSourceId) : null,
     definitions: sanitizedDefinitions.map((definition) => ({
       ...definition,
       sourceKey: dataSourcesById.get(definition.dataSourceId)?.sourceKey ?? null,
@@ -2702,7 +2803,8 @@ export const getIndicatorBySlug = query({
     if (!indicator) {
       return null
     }
-    return await buildIndicatorView(ctx, profile._id, indicator)
+    const sourceResolver = await createProfileIndicatorSourceResolver(ctx, profile._id)
+    return await buildIndicatorView(ctx, profile._id, indicator, sourceResolver)
   },
 })
 
@@ -2718,8 +2820,11 @@ export const getDerivedIndicatorBySlug = query({
     if (!derivedIndicator) {
       return null
     }
-
-    return buildDerivedIndicatorView(derivedIndicator)
+    const sourceResolver = await createProfileIndicatorSourceResolver(ctx, profile._id)
+    return buildDerivedIndicatorView(
+      derivedIndicator,
+      sourceResolver.resolveDerivedBinding({ indicatorId: derivedIndicator._id })
+    )
   },
 })
 
@@ -2727,6 +2832,7 @@ export const validateDerivedIndicatorSameSnapshotWarning = query({
   args: {
     profileSlug: v.string(),
     slug: v.optional(v.string()),
+    lockedSourceKey: v.optional(v.string()),
     formula: derivedFormulaValidator,
   },
   returns: v.object({
@@ -2737,6 +2843,14 @@ export const validateDerivedIndicatorSameSnapshotWarning = query({
       const profile = await getProfileBySlug(ctx, args.profileSlug)
       validateDerivedFormula(args.formula)
       await assertDerivedDependenciesExistInProfile(ctx, profile._id, args.formula)
+      if (args.lockedSourceKey) {
+        await assertDerivedIndicatorLockedSourceCompatibility(
+          ctx,
+          profile._id,
+          args.formula,
+          args.lockedSourceKey
+        )
+      }
       if (args.slug) {
         await assertNoDerivedIndicatorCycles(ctx, profile._id, {
           slug: args.slug,
@@ -3113,6 +3227,7 @@ export const upsertDerivedIndicator = mutation({
     label: v.string(),
     unit: v.optional(v.string()),
     description: v.optional(v.string()),
+    lockedSourceKey: v.string(),
     formula: derivedFormulaValidator,
     enabled: v.optional(v.boolean()),
   },
@@ -3133,6 +3248,12 @@ export const upsertDerivedIndicator = mutation({
       excludeSlug: args.slug,
     })
     await assertDerivedDependenciesExistInProfile(ctx, profile._id, args.formula)
+    const sourceResolution = await assertDerivedIndicatorLockedSourceCompatibility(
+      ctx,
+      profile._id,
+      args.formula,
+      args.lockedSourceKey
+    )
     await assertNoDerivedIndicatorCycles(ctx, profile._id, {
       slug: args.slug,
       formula: args.formula,
@@ -3161,6 +3282,8 @@ export const upsertDerivedIndicator = mutation({
         label: args.label,
         unit: args.unit,
         description: args.description,
+        lockedSourceKey: args.lockedSourceKey,
+        lockedDataSourceId: sourceResolution.dataSource?._id,
         formula: args.formula,
         directBaseDependencySlugs,
         directDerivedDependencySlugs,
@@ -3195,6 +3318,8 @@ export const upsertDerivedIndicator = mutation({
       unit: args.unit,
       description: args.description,
       reportUsageCount: normalizeReportUsageCount(latest?.reportUsageCount),
+      lockedSourceKey: args.lockedSourceKey,
+      lockedDataSourceId: sourceResolution.dataSource?._id,
       formula: args.formula,
       directBaseDependencySlugs,
       directDerivedDependencySlugs,
@@ -3245,6 +3370,7 @@ export const transferIndicatorAcrossProfiles = mutation({
     targetCategory: v.optional(v.string()),
     targetDescription: v.optional(v.string()),
     targetEnabled: v.optional(v.boolean()),
+    targetLockedSourceKey: v.optional(v.string()),
     targetFormula: v.optional(derivedFormulaValidator),
     targetDefinition: v.optional(v.object({
       sourceKey: v.string(),
@@ -3381,6 +3507,11 @@ export const transferIndicatorAcrossProfiles = mutation({
     const targetDescription = args.targetDescription ?? sourceDerivedIndicator.description
     const targetFormula = args.targetFormula ?? sourceDerivedIndicator.formula
     const targetEnabled = args.targetEnabled ?? sourceDerivedIndicator.enabled
+    const targetLockedSourceKey = args.targetLockedSourceKey ?? sourceDerivedIndicator.lockedSourceKey
+
+    if (!targetLockedSourceKey) {
+      throw new Error('Il KPI derivato sorgente non ha una data source vincolata. Seleziona una source prima di copiarlo o spostarlo.')
+    }
 
     await assertUniqueIndicatorIdentity(ctx, {
       profileId: targetProfile._id,
@@ -3392,6 +3523,12 @@ export const transferIndicatorAcrossProfiles = mutation({
     })
     validateDerivedFormula(targetFormula)
     await assertDerivedDependenciesExistInProfile(ctx, targetProfile._id, targetFormula)
+    const sourceResolution = await assertDerivedIndicatorLockedSourceCompatibility(
+      ctx,
+      targetProfile._id,
+      targetFormula,
+      targetLockedSourceKey
+    )
     await assertNoDerivedIndicatorCycles(ctx, targetProfile._id, {
       slug: sourceDerivedIndicator.slug,
       formula: targetFormula,
@@ -3409,6 +3546,8 @@ export const transferIndicatorAcrossProfiles = mutation({
       unit: targetUnit,
       description: targetDescription,
       reportUsageCount: 0,
+      lockedSourceKey: targetLockedSourceKey,
+      lockedDataSourceId: sourceResolution.dataSource?._id,
       formula: targetFormula,
       directBaseDependencySlugs: listDirectFormulaDependencies(targetFormula)
         .filter((dependency) => dependency.indicatorKind === 'base')
@@ -3450,8 +3589,14 @@ export const listDerivedIndicators = query({
       .query('derivedIndicators')
       .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
       .collect()
+    const sourceResolver = await createProfileIndicatorSourceResolver(ctx, profile._id)
     return sortIndicatorsByReportUsage(
-      listLatestRowsBySlug(rows).map((row) => buildDerivedIndicatorView(row))
+      listLatestRowsBySlug(rows).map((row) => (
+        buildDerivedIndicatorView(
+          row,
+          sourceResolver.resolveDerivedBinding({ indicatorId: row._id })
+        )
+      ))
     )
   },
 })
@@ -3470,6 +3615,7 @@ export const listProfileDefinitions = query({
       ctx.db.query('derivedIndicators').withIndex('by_profile', (q) => q.eq('profileId', profile._id)).collect(),
     ])
     const dataSources = allDataSources.filter((row) => !row.archivedAt)
+    const sourceResolver = await createProfileIndicatorSourceResolver(ctx, profile._id)
     const indicators = listLatestRowsBySlug(allIndicators)
     const derivedIndicators = listLatestRowsBySlug(allDerivedIndicators)
     const baseVersionCountBySlug = new Map<string, number>()
@@ -3488,7 +3634,7 @@ export const listProfileDefinitions = query({
     const currentIndicatorIds = new Set(indicators.map((indicator) => String(indicator._id)))
     const definitions = allDefinitions.filter((definition) => currentIndicatorIds.has(String(definition.indicatorId)))
     const indicatorViews = await Promise.all(indicators.map(async (indicator) => {
-      const indicatorView = await buildIndicatorView(ctx, profile._id, indicator)
+      const indicatorView = await buildIndicatorView(ctx, profile._id, indicator, sourceResolver)
       return {
         ...indicatorView,
         latestVersion: indicator.version,
@@ -3497,7 +3643,10 @@ export const listProfileDefinitions = query({
     }))
     const derivedIndicatorViews = sortIndicatorsByReportUsage(
       derivedIndicators.map((derivedIndicator) => ({
-        ...buildDerivedIndicatorView(derivedIndicator),
+        ...buildDerivedIndicatorView(
+          derivedIndicator,
+          sourceResolver.resolveDerivedBinding({ indicatorId: derivedIndicator._id })
+        ),
         latestVersion: derivedIndicator.version,
         hasOlderVersions: (derivedVersionCountBySlug.get(derivedIndicator.slug) ?? 0) > 1,
       }))
@@ -3529,6 +3678,66 @@ export const listProfileDataSources = query({
       .filter((row) => !row.archivedAt)
       .sort((left, right) => left.label.localeCompare(right.label))
       .map((row) => buildDataSourceView(row))
+  },
+})
+
+export const listProfileIndicatorsBySource = query({
+  args: {
+    profileSlug: v.string(),
+    sourceKey: v.string(),
+  },
+  returns: v.object({
+    profileSlug: v.string(),
+    sourceKey: v.string(),
+    indicators: v.array(v.any()),
+  }),
+  handler: async (ctx, args) => {
+    const profile = await getProfileBySlug(ctx, args.profileSlug)
+    const sourceResolver = await createProfileIndicatorSourceResolver(ctx, profile._id)
+    const [allIndicators, allDerivedIndicators] = await Promise.all([
+      ctx.db
+        .query('indicators')
+        .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
+        .collect(),
+      ctx.db
+        .query('derivedIndicators')
+        .withIndex('by_profile', (q) => q.eq('profileId', profile._id))
+        .collect(),
+    ])
+
+    const indicators = [
+      ...listLatestRowsBySlug(allIndicators)
+        .map((indicator) => ({
+          ...indicator,
+          indicatorKind: 'base' as const,
+          sourceBinding: sourceResolver.resolveBaseBinding({ indicatorId: indicator._id }),
+        })),
+      ...listLatestRowsBySlug(allDerivedIndicators)
+        .map((indicator) => ({
+          ...indicator,
+          indicatorKind: 'derived' as const,
+          sourceBinding: sourceResolver.resolveDerivedBinding({ indicatorId: indicator._id }),
+        })),
+    ]
+      .filter((indicator) => indicator.enabled)
+      .filter((indicator) => indicator.sourceBinding.lockedSourceKey === args.sourceKey)
+      .filter((indicator) => indicator.sourceBinding.isEligible)
+      .map((indicator) => ({
+        slug: indicator.slug,
+        label: indicator.label,
+        unit: indicator.unit,
+        enabled: indicator.enabled,
+        reportUsageCount: normalizeReportUsageCount(indicator.reportUsageCount),
+        kind: indicator.indicatorKind,
+        sourceBinding: buildSourceBindingView(indicator.sourceBinding),
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label))
+
+    return {
+      profileSlug: profile.slug,
+      sourceKey: args.sourceKey,
+      indicators,
+    }
   },
 })
 
@@ -4296,6 +4505,15 @@ export const runSnapshotRunWorkflow = internalAction({
       finishedAt: Date.now(),
     })
 
+    if (latestState.run.errorCount === 0 && latestState.snapshot.triggerSourceKey) {
+      await ctx.runMutation(
+        (internal as any).reportEngine.syncReportsToLatestSnapshotForSource,
+        {
+          snapshotId: latestState.snapshot._id,
+        }
+      )
+    }
+
     return null
   },
 })
@@ -4760,7 +4978,8 @@ async function getLatestSnapshotIdForProfile (ctx: QueryCtx, profileSlug: string
 async function buildIndicatorHistoryData (
   ctx: QueryCtx,
   member: ReportWidgetMemberInput | ReportWidgetMember,
-  limit?: number
+  limit?: number,
+  maxSnapshotAt?: number
 ) {
   const resolvedMember = await resolveReportWidgetMemberReference(ctx, member)
   const boundedLimit = limit ?? 12
@@ -4771,14 +4990,27 @@ async function buildIndicatorHistoryData (
   }
 
   if (resolvedMember.member.indicatorKind === 'base') {
-    const rows = await ctx.db
-      .query('snapshotValues')
-      .withIndex('by_indicator_and_snapshot_at', (q: any) => q.eq('indicatorId', resolvedMember.indicator._id as Id<'indicators'>))
-      .order('desc')
-      .take(boundedLimit)
+    const indicatorVersions = await listIndicatorsByProfileAndSlug(
+      ctx,
+      resolvedMember.profile._id,
+      resolvedMember.member.indicatorSlug
+    )
+    const rows = (await Promise.all(indicatorVersions.map(async (indicatorVersion: Doc<'indicators'>) => {
+      return await ctx.db
+        .query('snapshotValues')
+        .withIndex('by_indicator_and_snapshot_at', (q: any) => {
+          const baseQuery = q.eq('indicatorId', indicatorVersion._id as Id<'indicators'>)
+          return maxSnapshotAt == null ? baseQuery : baseQuery.lte('snapshotAt', maxSnapshotAt)
+        })
+        .order('desc')
+        .take(boundedLimit)
+    })))
+      .flat()
 
     const points = rows
       .filter((row) => row.profileId === resolvedMember.profile._id)
+      .sort((left, right) => right.snapshotAt - left.snapshotAt)
+      .slice(0, boundedLimit)
       .map((row) => ({
         snapshotId: String(row.snapshotId),
         snapshotAt: row.snapshotAt ?? null,
@@ -4802,14 +5034,27 @@ async function buildIndicatorHistoryData (
     }
   }
 
-  const rows = await ctx.db
-    .query('derivedSnapshotValues')
-    .withIndex('by_derived_indicator_and_snapshot_at', (q: any) => q.eq('derivedIndicatorId', resolvedMember.indicator._id as Id<'derivedIndicators'>))
-    .order('desc')
-    .take(boundedLimit)
+  const derivedIndicatorVersions = await listDerivedIndicatorsByProfileAndSlug(
+    ctx,
+    resolvedMember.profile._id,
+    resolvedMember.member.indicatorSlug
+  )
+  const rows = (await Promise.all(derivedIndicatorVersions.map(async (indicatorVersion: Doc<'derivedIndicators'>) => {
+    return await ctx.db
+      .query('derivedSnapshotValues')
+      .withIndex('by_derived_indicator_and_snapshot_at', (q: any) => {
+        const baseQuery = q.eq('derivedIndicatorId', indicatorVersion._id as Id<'derivedIndicators'>)
+        return maxSnapshotAt == null ? baseQuery : baseQuery.lte('snapshotAt', maxSnapshotAt)
+      })
+      .order('desc')
+      .take(boundedLimit)
+  })))
+    .flat()
 
   const points = rows
     .filter((row) => row.profileId === resolvedMember.profile._id)
+    .sort((left, right) => right.snapshotAt - left.snapshotAt)
+    .slice(0, boundedLimit)
     .map((row) => ({
       snapshotId: String(row.snapshotId),
       snapshotAt: row.snapshotAt ?? null,
@@ -4880,12 +5125,20 @@ async function buildSnapshotIndicatorSliceData (
     }
 
     if (resolvedMember.member.indicatorKind === 'base') {
-      const row = await ctx.db
-        .query('snapshotValues')
-        .withIndex('by_snapshot_and_indicator', (q: any) => (
-          q.eq('snapshotId', snapshot._id).eq('indicatorId', resolvedMember.indicator._id as Id<'indicators'>)
-        ))
-        .unique()
+      const indicatorVersions = await listIndicatorsByProfileAndSlug(
+        ctx,
+        resolvedMember.profile._id,
+        resolvedMember.member.indicatorSlug
+      )
+      const rows = await Promise.all(indicatorVersions.map(async (indicatorVersion: Doc<'indicators'>) => {
+        return await ctx.db
+          .query('snapshotValues')
+          .withIndex('by_snapshot_and_indicator', (q: any) => (
+            q.eq('snapshotId', snapshot._id).eq('indicatorId', indicatorVersion._id as Id<'indicators'>)
+          ))
+          .unique()
+      }))
+      const row = rows.find(Boolean) ?? null
 
       return {
         memberKey: buildReportWidgetMemberKey(resolvedMember.member),
@@ -4995,7 +5248,8 @@ function buildTimelineFromHistories (
 
 async function buildReportWidgetData (
   ctx: QueryCtx,
-  widget: AnalyticsReportWidget
+  widget: AnalyticsReportWidget,
+  pinnedSnapshotId?: string
 ) {
   const baseData = {
     widgetId: String(widget._id),
@@ -5007,6 +5261,7 @@ async function buildReportWidgetData (
 
   if (widget.widgetType === 'single_value') {
     const slice = await buildSnapshotIndicatorSliceData(ctx, {
+      snapshotId: pinnedSnapshotId,
       profileSlug: widget.members[0]?.sourceProfileSlug,
       members: widget.members,
     })
@@ -5019,6 +5274,7 @@ async function buildReportWidgetData (
 
   if (widget.chartKind === 'pie') {
     const slice = await buildSnapshotIndicatorSliceData(ctx, {
+      snapshotId: pinnedSnapshotId,
       profileSlug: widget.members[0]?.sourceProfileSlug,
       members: widget.members,
     })
@@ -5030,8 +5286,16 @@ async function buildReportWidgetData (
     }
   }
 
+  const pinnedSnapshot = pinnedSnapshotId
+    ? await ctx.db.get(pinnedSnapshotId as Id<'snapshots'>)
+    : null
   const histories = await Promise.all(widget.members.map(async (member) => {
-    return await buildIndicatorHistoryData(ctx, member, widget.timeRange?.limit)
+    return await buildIndicatorHistoryData(
+      ctx,
+      member,
+      widget.timeRange?.limit,
+      pinnedSnapshot?.snapshotAt
+    )
   }))
 
   return {
@@ -5055,20 +5319,48 @@ async function buildReportWidgetData (
 export const listSnapshots = query({
   args: {
     profileSlug: v.optional(v.string()),
+    sourceKey: v.optional(v.string()),
     limit: v.optional(v.number()),
   },
   returns: v.array(v.any()),
   handler: async (ctx, args) => {
     const limit = args.limit ?? 20
-    if (!args.profileSlug) {
-      return await ctx.db.query('snapshots').order('desc').take(limit)
+    const profile = args.profileSlug
+      ? await getProfileBySlug(ctx, args.profileSlug)
+      : null
+    if (profile && args.sourceKey) {
+      const rows = await ctx.db
+        .query('snapshots')
+        .withIndex('by_profile_and_trigger_source_key_and_status_and_snapshot_at', (q) => (
+          q
+            .eq('profileId', profile._id)
+            .eq('triggerSourceKey', args.sourceKey)
+            .eq('status', 'completed')
+        ))
+        .order('desc')
+        .take(limit)
+
+      return rows
     }
-    const profile = await getProfileBySlug(ctx, args.profileSlug)
-    return await ctx.db
-      .query('snapshots')
-      .withIndex('by_profile_and_snapshot_at', (q) => q.eq('profileId', profile._id))
-      .order('desc')
-      .take(limit)
+
+    const rows = !profile
+      ? await ctx.db.query('snapshots').order('desc').take(limit * 4)
+      : await ctx.db
+        .query('snapshots')
+        .withIndex('by_profile_and_snapshot_at', (q) => q.eq('profileId', profile._id))
+        .order('desc')
+        .take(limit * 4)
+
+    return rows
+      .filter((snapshot) => snapshot.status === 'completed')
+      .filter((snapshot) => {
+        if (!args.sourceKey) {
+          return true
+        }
+
+        return snapshot.triggerSourceKey === args.sourceKey
+      })
+      .slice(0, limit)
   },
 })
 
@@ -5105,21 +5397,23 @@ export const getSnapshotIndicatorSlice = query({
 export const getReportWidgetData = query({
   args: {
     widget: transportReportWidgetValidator,
+    pinnedSnapshotId: v.optional(v.string()),
   },
   returns: v.any(),
   handler: async (ctx, args) => {
-    return await buildReportWidgetData(ctx, args.widget as AnalyticsReportWidget)
+    return await buildReportWidgetData(ctx, args.widget as AnalyticsReportWidget, args.pinnedSnapshotId)
   },
 })
 
 export const getReportWidgetsData = query({
   args: {
     widgets: v.array(transportReportWidgetValidator),
+    pinnedSnapshotId: v.optional(v.string()),
   },
   returns: v.array(v.any()),
   handler: async (ctx, args) => {
     return await Promise.all(args.widgets.map(async (widget) => {
-      return await buildReportWidgetData(ctx, widget as AnalyticsReportWidget)
+      return await buildReportWidgetData(ctx, widget as AnalyticsReportWidget, args.pinnedSnapshotId)
     }))
   },
 })

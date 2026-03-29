@@ -11,6 +11,8 @@
 import type * as exportWorkflows from "../exportWorkflows.js";
 import type * as externalSources from "../externalSources.js";
 import type * as lib_calculationFilters from "../lib/calculationFilters.js";
+import type * as lib_indicatorSourceBinding from "../lib/indicatorSourceBinding.js";
+import type * as lib_reportSnapshots from "../lib/reportSnapshots.js";
 import type * as materialization from "../materialization.js";
 import type * as materializationReader from "../materializationReader.js";
 import type * as reportEngine from "../reportEngine.js";
@@ -29,6 +31,8 @@ const fullApi: ApiFromModules<{
   exportWorkflows: typeof exportWorkflows;
   externalSources: typeof externalSources;
   "lib/calculationFilters": typeof lib_calculationFilters;
+  "lib/indicatorSourceBinding": typeof lib_indicatorSourceBinding;
+  "lib/reportSnapshots": typeof lib_reportSnapshots;
   materialization: typeof materialization;
   materializationReader: typeof materializationReader;
   reportEngine: typeof reportEngine;

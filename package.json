@@ -1,7 +1,7 @@
 {
   "name": "@okrlinkhub/kpi-snapshot",
   "description": "Componente Convex per KPI snapshot dinamici e configurabili.",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": false,
   "type": "module",
   "files": [
@@ -14,6 +14,10 @@
     ".": {
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
+    },
+    "./report-export": {
+      "types": "./dist/shared/reportExport.d.ts",
+      "default": "./dist/shared/reportExport.js"
     },
     "./test": "./src/test.ts",
     "./_generated/component.js": {
@@ -40,6 +44,7 @@
     "build": "tsc --project ./tsconfig.build.json",
     "build:codegen": "npx convex codegen --component-dir ./src/component && npm run build",
     "build:clean": "rm -rf dist *.tsbuildinfo && npm run build:codegen",
+    "test": "vitest run --config ./vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit && eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preversion": "npm run build:clean && npm run typecheck",
@@ -74,7 +79,8 @@
     "tailwindcss": "^4.1.18",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.54.0",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "vitest": "^4.1.2"
   },
   "types": "./dist/client/index.d.ts",
   "module": "./dist/client/index.js"

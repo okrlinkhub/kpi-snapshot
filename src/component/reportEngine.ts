@@ -1,6 +1,8 @@
 import { v } from 'convex/values'
-import { mutation, query, type MutationCtx, type QueryCtx } from './_generated/server.js'
+import { internalMutation, mutation, query, type MutationCtx, type QueryCtx } from './_generated/server.js'
 import type { Doc, Id } from './_generated/dataModel.js'
+import { createProfileIndicatorSourceResolver } from './lib/indicatorSourceBinding.js'
+import { getLatestCompletedSnapshotForProfileAndSource, resolveReportSnapshotDocument } from './lib/reportSnapshots.js'
 import {
   createReportWidgetArgsValidator,
   storedReportWidgetValidator,
@@ -20,6 +22,11 @@ const reportSummaryValidator = v.object({
   slug: v.string(),
   name: v.string(),
   description: v.optional(v.string()),
+  lockedSourceKey: v.optional(v.string()),
+  lockedDataSourceId: v.union(v.string(), v.null()),
+  lockedSourceLabel: v.union(v.string(), v.null()),
+  pinnedSnapshotId: v.union(v.string(), v.null()),
+  pinnedSnapshotAt: v.union(v.number(), v.null()),
   isArchived: v.boolean(),
   createdByKey: v.optional(v.string()),
   updatedByKey: v.optional(v.string()),
@@ -57,6 +64,35 @@ async function getProfileBySlug (ctx: QueryCtx | MutationCtx, slug: string) {
   return profile
 }
 
+async function getDataSourceBySourceKey (ctx: QueryCtx | MutationCtx, sourceKey: string) {
+  const dataSource = await ctx.db
+    .query('dataSources')
+    .withIndex('by_source_key', (q) => q.eq('sourceKey', sourceKey))
+    .unique()
+
+  if (!dataSource || dataSource.archivedAt) {
+    throw new Error(`Data source '${sourceKey}' non trovata`)
+  }
+
+  return dataSource
+}
+
+async function getSnapshotById (
+  ctx: QueryCtx | MutationCtx,
+  snapshotId?: Id<'snapshots'>
+) {
+  if (!snapshotId) {
+    return null
+  }
+
+  const snapshot = await ctx.db.get(snapshotId)
+  if (!snapshot) {
+    throw new Error('Snapshot non trovato')
+  }
+
+  return snapshot
+}
+
 async function buildUniqueReportSlug (
   ctx: QueryCtx | MutationCtx,
   value: string,
@@ -90,9 +126,27 @@ async function buildReportSummary (
     return null
   }
 
+  const [dataSource, snapshot] = await Promise.all([
+    report.lockedSourceKey
+      ? ctx.db
+        .query('dataSources')
+        .withIndex('by_source_key', (q) => q.eq('sourceKey', report.lockedSourceKey as string))
+        .unique()
+      : Promise.resolve(null),
+    resolveReportSnapshotDocument(ctx, {
+      profileId: report.profileId,
+      lockedSourceKey: report.lockedSourceKey,
+      pinnedSnapshotId: report.pinnedSnapshotId,
+    }),
+  ])
+
   return {
     ...report,
     profileSlug: profile.slug,
+    lockedSourceLabel: dataSource?.label ?? report.lockedSourceKey ?? null,
+    lockedDataSourceId: report.lockedDataSourceId ? String(report.lockedDataSourceId) : null,
+    pinnedSnapshotId: snapshot ? String(snapshot._id) : null,
+    pinnedSnapshotAt: snapshot?.snapshotAt ?? null,
   }
 }
 
@@ -102,6 +156,79 @@ async function getReportOrThrow (ctx: QueryCtx | MutationCtx, reportId: Id<'repo
     throw new Error('Report non trovato')
   }
   return report
+}
+
+async function assertSnapshotCompatibleWithReportScope (
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    profileId: Id<'snapshotProfiles'>
+    lockedSourceKey?: string
+    snapshotId?: Id<'snapshots'>
+  }
+) {
+  if (!args.snapshotId) {
+    return null
+  }
+
+  const snapshot = await getSnapshotById(ctx, args.snapshotId)
+  if (!snapshot) {
+    return null
+  }
+
+  if (snapshot.profileId !== args.profileId) {
+    throw new Error('Lo snapshot selezionato non appartiene al profilo del report')
+  }
+
+  if (args.lockedSourceKey && snapshot.triggerSourceKey !== args.lockedSourceKey) {
+    throw new Error('Lo snapshot selezionato non e` compatibile con la data source del report')
+  }
+
+  return snapshot
+}
+
+async function resolvePinnedSnapshotIdForReportScope (
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    profileId: Id<'snapshotProfiles'>
+    lockedSourceKey?: string
+    requestedSnapshotId?: Id<'snapshots'>
+  }
+) {
+  const requestedSnapshot = await assertSnapshotCompatibleWithReportScope(ctx, {
+    profileId: args.profileId,
+    lockedSourceKey: args.lockedSourceKey,
+    snapshotId: args.requestedSnapshotId,
+  })
+
+  const latestSnapshot = await getLatestCompletedSnapshotForProfileAndSource(ctx, {
+    profileId: args.profileId,
+    sourceKey: args.lockedSourceKey,
+  })
+
+  return latestSnapshot?._id ?? requestedSnapshot?._id
+}
+
+async function assertMembersCompatibleWithReportSource (
+  ctx: QueryCtx | MutationCtx,
+  report: Doc<'reports'>,
+  members: ReportWidgetMember[]
+) {
+  if (!report.lockedSourceKey) {
+    throw new Error('Seleziona prima la data source del report')
+  }
+
+  const sourceResolver = await createProfileIndicatorSourceResolver(ctx, report.profileId)
+
+  for (const member of members) {
+    if (member.sourceProfileId !== report.profileId) {
+      throw new Error('Finche` gli snapshot restano profile-first, il report puo` usare solo KPI del proprio profilo')
+    }
+
+    const binding = sourceResolver.resolveMemberBinding(member)
+    if (!binding.isEligible || binding.lockedSourceKey !== report.lockedSourceKey) {
+      throw new Error(`Il KPI '${member.indicatorLabel}' non e' compatibile con la data source del report`)
+    }
+  }
 }
 
 async function getBaseIndicatorByProfileAndSlug (
@@ -495,6 +622,8 @@ export const createReport = mutation({
     name: v.string(),
     description: v.optional(v.string()),
     slug: v.optional(v.string()),
+    lockedSourceKey: v.string(),
+    pinnedSnapshotId: v.optional(v.id('snapshots')),
     createdByKey: v.optional(v.string()),
   },
   returns: v.object({
@@ -503,17 +632,31 @@ export const createReport = mutation({
   }),
   handler: async (ctx, args) => {
     const profile = await getProfileBySlug(ctx, args.profileSlug)
+    const dataSource = await getDataSourceBySourceKey(ctx, args.lockedSourceKey)
     const now = Date.now()
     const slug = await buildUniqueReportSlug(
       ctx,
       normalizeOptionalString(args.slug) ?? args.name
     )
 
+    if (dataSource.archivedAt) {
+      throw new Error('La data source selezionata non e` disponibile')
+    }
+
+    const pinnedSnapshotId = await resolvePinnedSnapshotIdForReportScope(ctx, {
+      profileId: profile._id,
+      lockedSourceKey: dataSource.sourceKey,
+      requestedSnapshotId: args.pinnedSnapshotId,
+    })
+
     const reportId = await ctx.db.insert('reports', {
       profileId: profile._id,
       slug,
       name: args.name.trim(),
       description: normalizeOptionalString(args.description),
+      lockedSourceKey: dataSource.sourceKey,
+      lockedDataSourceId: dataSource._id,
+      pinnedSnapshotId,
       isArchived: false,
       createdByKey: normalizeOptionalString(args.createdByKey),
       updatedByKey: normalizeOptionalString(args.createdByKey),
@@ -554,6 +697,8 @@ export const updateReportMeta = mutation({
     name: v.optional(v.string()),
     description: v.optional(v.string()),
     slug: v.optional(v.string()),
+    lockedSourceKey: v.optional(v.string()),
+    pinnedSnapshotId: v.optional(v.id('snapshots')),
     isArchived: v.optional(v.boolean()),
     updatedByKey: v.optional(v.string()),
   },
@@ -571,6 +716,32 @@ export const updateReportMeta = mutation({
       ? await buildUniqueReportSlug(ctx, args.slug, report._id)
       : report.slug
     const nextIsArchived = args.isArchived ?? report.isArchived
+    const nextLockedSourceKey = args.lockedSourceKey ?? report.lockedSourceKey
+    const nextDataSource = nextLockedSourceKey
+      ? await getDataSourceBySourceKey(ctx, nextLockedSourceKey)
+      : null
+    const requestedPinnedSnapshotId = args.pinnedSnapshotId ?? (
+      nextLockedSourceKey === report.lockedSourceKey ? report.pinnedSnapshotId : undefined
+    )
+    const widgets = await ctx.db
+      .query('reportWidgets')
+      .withIndex('by_report', (q) => q.eq('reportId', report._id))
+      .collect()
+
+    const nextPinnedSnapshotId = await resolvePinnedSnapshotIdForReportScope(ctx, {
+      profileId: report.profileId,
+      lockedSourceKey: nextLockedSourceKey,
+      requestedSnapshotId: requestedPinnedSnapshotId,
+    })
+
+    if (nextLockedSourceKey && nextLockedSourceKey !== report.lockedSourceKey) {
+      for (const widget of widgets) {
+        await assertMembersCompatibleWithReportSource(ctx, {
+          ...report,
+          lockedSourceKey: nextLockedSourceKey,
+        }, widget.members as ReportWidgetMember[])
+      }
+    }
 
     if (report.isArchived !== nextIsArchived) {
       await adjustReportWidgetsUsageCounter(ctx, report._id, nextIsArchived ? -1 : 1)
@@ -582,6 +753,9 @@ export const updateReportMeta = mutation({
         ? normalizeOptionalString(args.description)
         : report.description,
       slug: nextSlug,
+      lockedSourceKey: nextLockedSourceKey,
+      lockedDataSourceId: nextDataSource?._id,
+      pinnedSnapshotId: nextPinnedSnapshotId,
       isArchived: nextIsArchived,
       updatedByKey: normalizeOptionalString(args.updatedByKey),
       updatedAt: Date.now(),
@@ -594,17 +768,53 @@ export const updateReportMeta = mutation({
   },
 })
 
+export const syncReportsToLatestSnapshotForSource = internalMutation({
+  args: {
+    snapshotId: v.id('snapshots'),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const snapshot = await ctx.db.get(args.snapshotId)
+    if (!snapshot || snapshot.status !== 'completed' || !snapshot.triggerSourceKey) {
+      return null
+    }
+
+    const reports = await ctx.db
+      .query('reports')
+      .withIndex('by_profile_and_locked_source_key', (q) => (
+        q.eq('profileId', snapshot.profileId).eq('lockedSourceKey', snapshot.triggerSourceKey)
+      ))
+      .collect()
+
+    for (const report of reports) {
+      if (report.isArchived || report.pinnedSnapshotId === snapshot._id) {
+        continue
+      }
+
+      await ctx.db.patch(report._id, {
+        pinnedSnapshotId: snapshot._id,
+      })
+    }
+
+    return null
+  },
+})
+
 export const addReportWidget = mutation({
   args: createReportWidgetArgsValidator,
   returns: v.id('reportWidgets'),
   handler: async (ctx, args) => {
     const parsedArgs = parseCreateReportWidgetArgs(args)
     const report = await getReportOrThrow(ctx, parsedArgs.reportId as Id<'reports'>)
+    if (!report.pinnedSnapshotId) {
+      throw new Error('Seleziona prima lo snapshot ancorato del report')
+    }
     const members = parsedArgs.widgetType === 'single_value'
       ? [await resolveReportWidgetMember(ctx, parsedArgs.member)]
       : await resolveReportWidgetMembers(ctx, parsedArgs.members)
 
     assertCreateWidgetArgs(parsedArgs, members)
+    await assertMembersCompatibleWithReportSource(ctx, report, members)
 
     const lastWidget = await ctx.db
       .query('reportWidgets')
@@ -680,6 +890,38 @@ export const removeReportWidget = mutation({
         })
       }
     }
+
+    await ctx.db.patch(report._id, {
+      updatedAt: now,
+    })
+
+    return null
+  },
+})
+
+export const updateReportWidget = mutation({
+  args: {
+    widgetId: v.id('reportWidgets'),
+    title: v.optional(v.string()),
+    description: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const widget = await ctx.db.get(args.widgetId)
+    if (!widget) {
+      throw new Error('Widget non trovato')
+    }
+
+    const report = await getReportOrThrow(ctx, widget.reportId)
+    const now = Date.now()
+
+    await ctx.db.patch(widget._id, {
+      title: args.title?.trim() || widget.title,
+      description: args.description !== undefined
+        ? normalizeOptionalString(args.description)
+        : widget.description,
+      updatedAt: now,
+    })
 
     await ctx.db.patch(report._id, {
       updatedAt: now,
