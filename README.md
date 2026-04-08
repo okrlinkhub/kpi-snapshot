@@ -39,12 +39,19 @@ npm install @okrlinkhub/kpi-snapshot @okrlinkhub/okrhub
 - generazione di export CSV globali automatici per audit/materializzazione e di export custom opzionalmente `profile-scoped`, con persistenza su storage Convex;
 - generazione di `snapshot`, `snapshotValues` e storico `values`;
 - audit interno `snapshotValue -> sourceExportIds`;
+- evidence CSV automatiche per i `snapshotValues` base, salvate su storage e collegate tramite `evidence*`;
 - versioning obbligatorio di indicatori base e derivati tramite coppia logica `slug` + `version`;
 - calcolo di indicatori derivati direttamente nel componente;
 - persistenza di report profile-scoped e widget ordinabili, con `slug` globale univoco per deep-link stabili;
 - widget report di tipo `single_value` e `chart`, con supporto nativo a trend storici e confronti multi-indicatore;
+- note opzionali su `snapshotValues` e `derivedSnapshotValues`, piu' deep-link opzionali su `indicators.referencePageUrl` e `derivedIndicators.referencePageUrl`, esposti ai consumer report/UI;
 - persistenza opzionale di `externalId` su `indicators` e `values`;
 - helper client-side `exposeApi(...)` per ridurre il boilerplate nell'app host.
+
+## Novita` 1.1.4
+
+- supporto a `notes` opzionale su `snapshotValues` e `derivedSnapshotValues`, pensato per annotare direttamente i valori mostrati nei report;
+- supporto a `referencePageUrl` opzionale su `indicators` e `derivedIndicators`, per aprire dal widget una pagina interna rilevante dell'app host.
 
 La tua app host continua a possedere:
 
@@ -363,9 +370,10 @@ Durante `createSnapshot` orchestrato dalla tua app:
 
 - legge le righe materializzate correnti del profilo;
 - crea un `snapshotRunItem` per ogni definizione attiva;
+- genera automaticamente una evidence CSV per ogni `snapshotValue` base usando le righe realmente filtrate dalla regola;
 - congela una volta sola il dataset di ogni source usata nello snapshot;
 - salva l'export frozen in `analyticsExports`;
-- mantiene la tracciabilita' fino a `snapshotValue -> sourceExportIds -> analyticsExports`.
+- mantiene la tracciabilita' fino a `snapshotValue -> sourceExportIds -> analyticsExports` e, se presente, `snapshotValue -> evidenceRef -> _storage`.
 
 `createSnapshotRun` non esegue piu' tutto in una singola mutation: crea subito `snapshot` + `snapshotRun`, mette il job in coda e prosegue in background con stati osservabili:
 
@@ -463,7 +471,7 @@ Funzioni principali esposte dal helper:
 - lettura: `listProfiles`, `listProfileDefinitions`, `listProfileDataSources`, `listDataSources`, `listDerivedIndicators`, `simulateSnapshot`, `listSnapshots`, `getSnapshotRunStatus`, `listSnapshotValues`, `getSnapshotValueEvidenceDownloadUrl`, `getSnapshotExplain`, `listSnapshotRunErrors`, `listExports`, `getExportDownloadUrl`, `getDataSourceFilterOptions`
 - report builder: `listReports`, `getReport`, `getReportBySlug`, `createReport`, `archiveReport`, `updateReportMeta`, `addReportWidget`, `removeReportWidget`, `reorderReportWidgets`, `getReportWidgetData`, `getReportWidgetsData`
 - chart data: `getIndicatorHistory`, `getSnapshotIndicatorSlice`
-- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `rebuildIndicatorReportUsageCounters`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `transferIndicatorAcrossProfiles`, `replaceProfileDefinitions`, `toggleCalculation`
+- configurazione: `createSnapshotProfile`, `upsertDataSource`, `replaceMaterializedRows`, `upsertIndicator`, `rebuildIndicatorReportUsageCounters`, `upsertCalculationDefinition`, `upsertDerivedIndicator`, `transferIndicatorAcrossProfiles`, `replaceProfileDefinitions`, `toggleCalculation`, `updateSnapshotValueNotes`
 
 Nota migrazione:
 
@@ -496,7 +504,12 @@ Tabelle principali:
 Campi rilevanti per integrazione:
 
 - `indicators.externalId` opzionale
+- `indicators.referencePageUrl` opzionale
+- `derivedIndicators.referencePageUrl` opzionale
 - `values.externalId` opzionale
+- `snapshotValues.notes` opzionale
+- `derivedSnapshotValues.notes` opzionale
+- `snapshotValues.evidenceRef`, `evidenceFileName`, `evidenceRowCount`, `evidenceGeneratedAt`, `evidenceMimeType`, `evidenceSha256`
 - `snapshotValues.sourceExportIds`
 - `snapshotRunItems.sourceExportIds`
 - `derivedSnapshotValues.sourceExportIds`

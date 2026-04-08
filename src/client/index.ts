@@ -103,6 +103,9 @@ export type SnapshotIndicatorSliceItem = {
   indicatorKind: 'base' | 'derived'
   indicatorLabel: string
   indicatorUnit: string | null
+  snapshotValueId: string | null
+  notes: string | null
+  referencePageUrl: string | null
   value: number | null
   recordedValue: number | null
   snapshotId: string | null
@@ -547,6 +550,19 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
       },
     }),
 
+    updateSnapshotValueNotes: mutationGeneric({
+      args: {
+        snapshotValueId: v.string(),
+        notes: v.union(v.string(), v.null()),
+      },
+      handler: async (ctx, args) => {
+        if (options?.auth) {
+          await options.auth(ctx, { type: 'update', entityType: 'snapshotValue' })
+        }
+        return await ctx.runMutation(component.snapshotEngine.updateSnapshotValueNotes, args)
+      },
+    }),
+
     getSnapshotExplain: queryGeneric({
       args: { snapshotId: v.string() },
       handler: async (ctx, args) => {
@@ -740,6 +756,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         unit: v.optional(v.string()),
         category: v.optional(v.string()),
         description: v.optional(v.string()),
+        referencePageUrl: v.optional(v.string()),
         externalId: v.optional(v.string()),
         enabled: v.optional(v.boolean()),
       },
@@ -816,6 +833,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         label: v.string(),
         unit: v.optional(v.string()),
         description: v.optional(v.string()),
+        referencePageUrl: v.optional(v.string()),
         lockedSourceKey: v.string(),
         formula: derivedFormulaValidator,
         enabled: v.optional(v.boolean()),
@@ -839,6 +857,7 @@ export function exposeApi<Name extends string | undefined = string | undefined>(
         targetUnit: v.optional(v.string()),
         targetCategory: v.optional(v.string()),
         targetDescription: v.optional(v.string()),
+        targetReferencePageUrl: v.optional(v.string()),
         targetEnabled: v.optional(v.boolean()),
         targetLockedSourceKey: v.optional(v.string()),
         targetFormula: v.optional(derivedFormulaValidator),

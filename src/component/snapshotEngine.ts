@@ -2,7 +2,7 @@ import { v } from 'convex/values'
 import { api, internal } from './_generated/api.js'
 import { action, internalAction, internalMutation, internalQuery, mutation, query } from './_generated/server.js'
 import type { Doc, Id } from './_generated/dataModel.js'
-import type { MutationCtx, QueryCtx } from './_generated/server.js'
+import type { ActionCtx, MutationCtx, QueryCtx } from './_generated/server.js'
 import {
   calculationFiltersValidator,
   normalizeCalculationFilters,
@@ -208,6 +208,16 @@ type CalculationResult = {
   resolvedFilters: ResolvedCalculationFilters
 }
 
+type SnapshotEvidenceUpload = {
+  snapshotRunItemId: string
+  snapshotValueId: string
+  storageId: Id<'_storage'>
+  fileName: string
+  rowCount: number
+  mimeType: string
+  sha256?: string
+}
+
 type DerivedComputationInput = {
   snapshotValueId: Id<'snapshotValues'> | Id<'derivedSnapshotValues'>
   snapshotValueKind: 'base' | 'derived'
@@ -264,6 +274,141 @@ function buildLatestRowsBySlug<T extends { slug: string, version: number }> (row
 
 function listLatestRowsBySlug<T extends { slug: string, version: number }> (rows: T[]) {
   return [...buildLatestRowsBySlug(rows).values()]
+}
+
+function normalizeOptionalTrimmedString (value?: string | null) {
+  const normalized = value?.trim()
+  return normalized ? normalized : undefined
+}
+
+function escapeEvidenceCsvValue (value: unknown) {
+  if (value == null) {
+    return ''
+  }
+  if (typeof value === 'object') {
+    return `"${JSON.stringify(value).replace(/"/g, '""')}"`
+  }
+  const raw = (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
+      ? String(value)
+      : JSON.stringify(value)
+  ).replace(/\r?\n/g, ' ')
+  if (raw.includes('"') || raw.includes(',') || raw.includes(';')) {
+    return `"${raw.replace(/"/g, '""')}"`
+  }
+  return raw
+}
+
+function slugifyEvidenceSegment (value?: string | null, fallback = 'evidence') {
+  return (value ?? fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || fallback
+}
+
+function collectEvidenceFieldKeys (
+  rows: Array<SourceRowInput>,
+  preferredFieldKeys?: Array<string>
+) {
+  if (preferredFieldKeys && preferredFieldKeys.length > 0) {
+    return preferredFieldKeys
+  }
+  return [...new Set(rows.flatMap((row) => Object.keys(row.rowData)))].sort((left, right) => (
+    left.localeCompare(right)
+  ))
+}
+
+function buildSnapshotEvidenceCsv (
+  rows: Array<SourceRowInput>,
+  preferredFieldKeys?: Array<string>
+) {
+  const fieldKeys = collectEvidenceFieldKeys(rows, preferredFieldKeys)
+  const headers = ['occurredAt', ...fieldKeys]
+  const lines = rows.map((row) => headers.map((header) => {
+    if (header === 'occurredAt') {
+      return escapeEvidenceCsvValue(row.occurredAt)
+    }
+    return escapeEvidenceCsvValue(row.rowData[header])
+  }).join(';'))
+  return `\uFEFF${headers.join(';')}\n${lines.join('\n')}`
+}
+
+async function computeSha256Hex (value: string) {
+  const bytes = new TextEncoder().encode(value)
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function buildSnapshotEvidenceFileName (args: {
+  sourceKey?: string | null
+  indicatorSlug: string
+  snapshotAt?: number | null
+}) {
+  const snapshotToken = typeof args.snapshotAt === 'number'
+    ? String(Math.trunc(args.snapshotAt))
+    : String(Date.now())
+  return `snapshot-evidence-${slugifyEvidenceSegment(args.sourceKey, 'source')}-${slugifyEvidenceSegment(
+    args.indicatorSlug,
+    'indicator'
+  )}-${snapshotToken}.csv`
+}
+
+function buildSnapshotEvidencePatch (upload: SnapshotEvidenceUpload, generatedAt: number) {
+  return {
+    evidenceRef: String(upload.storageId),
+    evidenceFileName: upload.fileName,
+    evidenceRowCount: upload.rowCount,
+    evidenceGeneratedAt: generatedAt,
+    evidenceMimeType: upload.mimeType,
+    evidenceSha256: upload.sha256,
+  }
+}
+
+async function applySnapshotValueEvidenceMetadataInMutationContext (
+  ctx: MutationCtx,
+  upload: SnapshotEvidenceUpload,
+  generatedAt = Date.now()
+) {
+  const patch = buildSnapshotEvidencePatch(upload, generatedAt)
+  await ctx.db.patch(upload.snapshotRunItemId as Id<'snapshotRunItems'>, patch)
+  await ctx.db.patch(upload.snapshotValueId as Id<'snapshotValues'>, patch)
+}
+
+async function generateAndAttachSnapshotValueEvidence (
+  ctx: ActionCtx,
+  args: {
+    snapshotRunItemId: string
+    snapshotValueId: string
+    sourceKey?: string | null
+    indicatorSlug: string
+    snapshotAt?: number | null
+    preferredFieldKeys?: Array<string>
+    rows: Array<SourceRowInput>
+  }
+) {
+  const mimeType = 'text/csv;charset=utf-8'
+  const csvContent = buildSnapshotEvidenceCsv(args.rows, args.preferredFieldKeys)
+  const storageId = await ctx.storage.store(
+    new Blob([csvContent], { type: mimeType })
+  )
+  const sha256 = await computeSha256Hex(csvContent)
+  await ctx.runMutation(internal.snapshotEngine.applySnapshotValueEvidenceMetadata, {
+    snapshotRunItemId: args.snapshotRunItemId,
+    snapshotValueId: args.snapshotValueId,
+    storageId,
+    fileName: buildSnapshotEvidenceFileName({
+      sourceKey: args.sourceKey,
+      indicatorSlug: args.indicatorSlug,
+      snapshotAt: args.snapshotAt,
+    }),
+    rowCount: args.rows.length,
+    mimeType,
+    sha256,
+  })
 }
 
 function buildScopedSlugKey (profileId: Id<'snapshotProfiles'>, slug: string) {
@@ -1939,6 +2084,7 @@ function buildDerivedIndicatorView (
 ) {
   return {
     ...derivedIndicator,
+    referencePageUrl: normalizeOptionalTrimmedString(derivedIndicator.referencePageUrl),
     reportUsageCount: normalizeReportUsageCount(derivedIndicator.reportUsageCount),
     sourceBinding: sourceBinding ? buildSourceBindingView(sourceBinding) : undefined,
     lockedSourceKey: sourceBinding?.lockedSourceKey ?? derivedIndicator.lockedSourceKey ?? null,
@@ -1997,6 +2143,7 @@ async function buildIndicatorView (
 
   return {
     ...indicator,
+    referencePageUrl: normalizeOptionalTrimmedString(indicator.referencePageUrl),
     reportUsageCount: normalizeReportUsageCount(indicator.reportUsageCount),
     sourceBinding: buildSourceBindingView(sourceBinding),
     lockedSourceKey: sourceBinding.lockedSourceKey,
@@ -2719,6 +2866,7 @@ export const upsertIndicator = mutation({
     unit: v.optional(v.string()),
     category: v.optional(v.string()),
     description: v.optional(v.string()),
+    referencePageUrl: v.optional(v.string()),
     externalId: v.optional(v.string()),
     enabled: v.optional(v.boolean()),
   },
@@ -2755,6 +2903,7 @@ export const upsertIndicator = mutation({
         unit: args.unit,
         category: args.category,
         description: args.description,
+        referencePageUrl: normalizeOptionalTrimmedString(args.referencePageUrl),
         externalId: args.externalId ?? existing.externalId,
         enabled: args.enabled ?? existing.enabled,
         updatedAt: now,
@@ -2783,6 +2932,7 @@ export const upsertIndicator = mutation({
       unit: args.unit,
       category: args.category,
       description: args.description,
+      referencePageUrl: normalizeOptionalTrimmedString(args.referencePageUrl),
       externalId: args.externalId,
       reportUsageCount: normalizeReportUsageCount(latest?.reportUsageCount),
       enabled: args.enabled ?? true,
@@ -3227,6 +3377,7 @@ export const upsertDerivedIndicator = mutation({
     label: v.string(),
     unit: v.optional(v.string()),
     description: v.optional(v.string()),
+    referencePageUrl: v.optional(v.string()),
     lockedSourceKey: v.string(),
     formula: derivedFormulaValidator,
     enabled: v.optional(v.boolean()),
@@ -3282,6 +3433,7 @@ export const upsertDerivedIndicator = mutation({
         label: args.label,
         unit: args.unit,
         description: args.description,
+        referencePageUrl: normalizeOptionalTrimmedString(args.referencePageUrl),
         lockedSourceKey: args.lockedSourceKey,
         lockedDataSourceId: sourceResolution.dataSource?._id,
         formula: args.formula,
@@ -3317,6 +3469,7 @@ export const upsertDerivedIndicator = mutation({
       label: args.label,
       unit: args.unit,
       description: args.description,
+      referencePageUrl: normalizeOptionalTrimmedString(args.referencePageUrl),
       reportUsageCount: normalizeReportUsageCount(latest?.reportUsageCount),
       lockedSourceKey: args.lockedSourceKey,
       lockedDataSourceId: sourceResolution.dataSource?._id,
@@ -3369,6 +3522,7 @@ export const transferIndicatorAcrossProfiles = mutation({
     targetUnit: v.optional(v.string()),
     targetCategory: v.optional(v.string()),
     targetDescription: v.optional(v.string()),
+    targetReferencePageUrl: v.optional(v.string()),
     targetEnabled: v.optional(v.boolean()),
     targetLockedSourceKey: v.optional(v.string()),
     targetFormula: v.optional(derivedFormulaValidator),
@@ -3411,6 +3565,9 @@ export const transferIndicatorAcrossProfiles = mutation({
       const targetUnit = args.targetUnit ?? sourceIndicator.unit
       const targetCategory = args.targetCategory ?? sourceIndicator.category
       const targetDescription = args.targetDescription ?? sourceIndicator.description
+      const targetReferencePageUrl = normalizeOptionalTrimmedString(
+        args.targetReferencePageUrl ?? sourceIndicator.referencePageUrl
+      )
       const targetEnabled = args.targetEnabled ?? sourceIndicator.enabled
 
       await assertUniqueIndicatorIdentity(ctx, {
@@ -3439,6 +3596,7 @@ export const transferIndicatorAcrossProfiles = mutation({
         unit: targetUnit,
         category: targetCategory,
         description: targetDescription,
+        referencePageUrl: targetReferencePageUrl,
         externalId: undefined,
         reportUsageCount: 0,
         enabled: targetEnabled,
@@ -3506,6 +3664,9 @@ export const transferIndicatorAcrossProfiles = mutation({
     const targetUnit = args.targetUnit ?? sourceDerivedIndicator.unit
     const targetDescription = args.targetDescription ?? sourceDerivedIndicator.description
     const targetFormula = args.targetFormula ?? sourceDerivedIndicator.formula
+    const targetReferencePageUrl = normalizeOptionalTrimmedString(
+      args.targetReferencePageUrl ?? sourceDerivedIndicator.referencePageUrl
+    )
     const targetEnabled = args.targetEnabled ?? sourceDerivedIndicator.enabled
     const targetLockedSourceKey = args.targetLockedSourceKey ?? sourceDerivedIndicator.lockedSourceKey
 
@@ -3545,6 +3706,7 @@ export const transferIndicatorAcrossProfiles = mutation({
       label: targetLabel,
       unit: targetUnit,
       description: targetDescription,
+      referencePageUrl: targetReferencePageUrl,
       reportUsageCount: 0,
       lockedSourceKey: targetLockedSourceKey,
       lockedDataSourceId: sourceResolution.dataSource?._id,
@@ -3726,6 +3888,7 @@ export const listProfileIndicatorsBySource = query({
         slug: indicator.slug,
         label: indicator.label,
         unit: indicator.unit,
+        referencePageUrl: normalizeOptionalTrimmedString(indicator.referencePageUrl),
         enabled: indicator.enabled,
         reportUsageCount: normalizeReportUsageCount(indicator.reportUsageCount),
         kind: indicator.indicatorKind,
@@ -4095,7 +4258,10 @@ export const recordSnapshotDefinitionResult = internalMutation({
     resolvedFilters: v.optional(v.any()),
     sampleRowsPreview: v.optional(v.array(v.any())),
   },
-  returns: v.null(),
+  returns: v.object({
+    snapshotRunItemId: v.string(),
+    snapshotValueId: v.union(v.string(), v.null()),
+  }),
   handler: async (ctx, args) => {
     const run = await ctx.db.get(args.snapshotRunId as Id<'snapshotRuns'>)
     if (!run) {
@@ -4126,13 +4292,14 @@ export const recordSnapshotDefinitionResult = internalMutation({
       createdAt: Date.now(),
     })
 
+    let snapshotValueId: Id<'snapshotValues'> | null = null
     if (args.status !== 'error' && args.normalizedResult != null) {
       const indicator = await ctx.db.get(args.indicatorId)
       if (!indicator) {
         throw new Error(`Indicatore non trovato '${args.indicatorId}'`)
       }
 
-      const snapshotValueId = await ctx.db.insert('snapshotValues', {
+      snapshotValueId = await ctx.db.insert('snapshotValues', {
         snapshotId: snapshot._id,
         snapshotRunId: run._id,
         snapshotRunItemId: itemId,
@@ -4181,6 +4348,26 @@ export const recordSnapshotDefinitionResult = internalMutation({
       })
     }
 
+    return {
+      snapshotRunItemId: String(itemId),
+      snapshotValueId: snapshotValueId ? String(snapshotValueId) : null,
+    }
+  },
+})
+
+export const applySnapshotValueEvidenceMetadata = internalMutation({
+  args: {
+    snapshotRunItemId: v.string(),
+    snapshotValueId: v.string(),
+    storageId: v.id('_storage'),
+    fileName: v.string(),
+    rowCount: v.number(),
+    mimeType: v.string(),
+    sha256: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await applySnapshotValueEvidenceMetadataInMutationContext(ctx, args)
     return null
   },
 })
@@ -4403,7 +4590,7 @@ export const runSnapshotRunWorkflow = internalAction({
         const startedAt = Date.now()
         try {
           const result = runSingleDefinition(definition, sourceRows, state.snapshot.snapshotAt)
-          await ctx.runMutation(internal.snapshotEngine.recordSnapshotDefinitionResult, {
+          const persistedResult = await ctx.runMutation(internal.snapshotEngine.recordSnapshotDefinitionResult, {
             snapshotRunId: args.snapshotRunId,
             definitionId: definition._id,
             indicatorId: definition.indicatorId,
@@ -4421,6 +4608,17 @@ export const runSnapshotRunWorkflow = internalAction({
             resolvedFilters: result.resolvedFilters,
             sampleRowsPreview: result.filteredRows.slice(0, 10),
           })
+          if (persistedResult.snapshotValueId) {
+            await generateAndAttachSnapshotValueEvidence(ctx, {
+              snapshotRunItemId: persistedResult.snapshotRunItemId,
+              snapshotValueId: persistedResult.snapshotValueId,
+              sourceKey: dataSource?.sourceKey,
+              indicatorSlug: indicatorsById.get(definition.indicatorId)?.slug ?? String(definition.indicatorId),
+              snapshotAt: state.snapshot.snapshotAt,
+              preferredFieldKeys: dataSource?.selectedFieldKeys,
+              rows: result.filteredRows,
+            })
+          }
         } catch (error) {
           sourceErrorsCount++
           await ctx.runMutation(internal.snapshotEngine.recordSnapshotDefinitionResult, {
@@ -4717,26 +4915,52 @@ export const attachSnapshotValueEvidence = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const generatedAt = Date.now()
     for (const upload of args.uploads) {
-      const evidenceRef = String(upload.storageId)
-      await ctx.db.patch(upload.snapshotRunItemId as Id<'snapshotRunItems'>, {
-        evidenceRef,
-        evidenceFileName: upload.fileName,
-        evidenceRowCount: upload.rowCount,
-        evidenceGeneratedAt: generatedAt,
-        evidenceMimeType: upload.mimeType,
-        evidenceSha256: upload.sha256,
-      })
-      await ctx.db.patch(upload.snapshotValueId as Id<'snapshotValues'>, {
-        evidenceRef,
-        evidenceFileName: upload.fileName,
-        evidenceRowCount: upload.rowCount,
-        evidenceGeneratedAt: generatedAt,
-        evidenceMimeType: upload.mimeType,
-        evidenceSha256: upload.sha256,
-      })
+      await applySnapshotValueEvidenceMetadataInMutationContext(ctx, upload)
     }
+    return null
+  },
+})
+
+export const updateSnapshotValueNotes = mutation({
+  args: {
+    snapshotValueId: v.string(),
+    notes: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const normalizedNotes = normalizeOptionalTrimmedString(args.notes)
+
+    if (isDerivedSnapshotValueId(args.snapshotValueId)) {
+      const derivedSnapshotValue = await ctx.db.get(parseDerivedSnapshotValueId(args.snapshotValueId))
+      if (!derivedSnapshotValue) {
+        throw new Error('Derived snapshot value non trovato')
+      }
+      if (normalizedNotes) {
+        await ctx.db.replace(derivedSnapshotValue._id, {
+          ...derivedSnapshotValue,
+          notes: normalizedNotes,
+        })
+        return null
+      }
+      const { notes: _ignoredNotes, ...derivedSnapshotValueWithoutNotes } = derivedSnapshotValue
+      await ctx.db.replace(derivedSnapshotValue._id, derivedSnapshotValueWithoutNotes)
+      return null
+    }
+
+    const snapshotValue = await ctx.db.get(args.snapshotValueId as Id<'snapshotValues'>)
+    if (!snapshotValue) {
+      throw new Error('Snapshot value non trovato')
+    }
+    if (normalizedNotes) {
+      await ctx.db.replace(snapshotValue._id, {
+        ...snapshotValue,
+        notes: normalizedNotes,
+      })
+      return null
+    }
+    const { notes: _ignoredNotes, ...snapshotValueWithoutNotes } = snapshotValue
+    await ctx.db.replace(snapshotValue._id, snapshotValueWithoutNotes)
     return null
   },
 })
@@ -4853,6 +5077,9 @@ const snapshotIndicatorSliceItemValidator = v.object({
   indicatorKind: v.union(v.literal('base'), v.literal('derived')),
   indicatorLabel: v.string(),
   indicatorUnit: v.union(v.string(), v.null()),
+  snapshotValueId: v.union(v.string(), v.null()),
+  notes: v.union(v.string(), v.null()),
+  referencePageUrl: v.union(v.string(), v.null()),
   value: v.union(v.number(), v.null()),
   recordedValue: v.union(v.number(), v.null()),
   snapshotId: v.union(v.string(), v.null()),
@@ -4921,6 +5148,7 @@ async function resolveReportWidgetMemberReference (
       },
       indicator,
       profile,
+      referencePageUrl: normalizeOptionalTrimmedString(indicator.referencePageUrl) ?? null,
       isStaleInactive: !indicator.enabled,
       staleReason: !indicator.enabled ? 'indicator_disabled' as const : null,
     }
@@ -4955,6 +5183,7 @@ async function resolveReportWidgetMemberReference (
     },
     indicator: derivedIndicator,
     profile,
+    referencePageUrl: null,
     isStaleInactive,
     staleReason: !derivedIndicator.enabled
       ? 'indicator_disabled' as const
@@ -5114,6 +5343,9 @@ async function buildSnapshotIndicatorSliceData (
         indicatorKind: resolvedMember.member.indicatorKind,
         indicatorLabel: resolvedMember.member.indicatorLabel,
         indicatorUnit,
+        snapshotValueId: null,
+        notes: null,
+        referencePageUrl: resolvedMember.referencePageUrl,
         value: null,
         recordedValue: null,
         snapshotId: null,
@@ -5147,6 +5379,9 @@ async function buildSnapshotIndicatorSliceData (
         indicatorKind: resolvedMember.member.indicatorKind,
         indicatorLabel: resolvedMember.member.indicatorLabel,
         indicatorUnit,
+        snapshotValueId: row ? String(row._id) : null,
+        notes: row?.notes ?? null,
+        referencePageUrl: resolvedMember.referencePageUrl,
         value: row && !resolvedMember.isStaleInactive
           ? normalizeTransportValue(row.value, indicatorUnit)
           : null,
@@ -5173,6 +5408,9 @@ async function buildSnapshotIndicatorSliceData (
       indicatorKind: resolvedMember.member.indicatorKind,
       indicatorLabel: resolvedMember.member.indicatorLabel,
       indicatorUnit,
+      snapshotValueId: row ? `derived:${String(row._id)}` : null,
+      notes: row?.notes ?? null,
+      referencePageUrl: resolvedMember.referencePageUrl,
       value: row && !resolvedMember.isStaleInactive
         ? normalizeTransportValue(row.value, indicatorUnit)
         : null,
@@ -5437,6 +5675,7 @@ export const listSnapshotValues = query({
         indicatorSlug: indicator?.slug ?? null,
         indicatorVersion: valueRow.indicatorVersion,
         indicatorUnit: indicator?.unit ?? null,
+        referencePageUrl: indicator?.referencePageUrl ?? null,
         isDerived: false,
         sourceExportCount: valueRow.sourceExportIds.length,
         sourceExports: await resolveExportSummaries(ctx, valueRow.sourceExportIds),
@@ -5458,6 +5697,15 @@ export const listSnapshotValues = query({
       evidenceFileName: null,
       evidenceRowCount: row.baseSnapshotValueIds.length + row.derivedSnapshotValueIds.length,
       evidenceGeneratedAt: null,
+      notes: row.notes ?? null,
+      referencePageUrl: (await ctx.db
+        .query('derivedIndicators')
+        .withIndex('by_profile_and_slug_and_version', (q) => (
+          q.eq('profileId', row.profileId)
+            .eq('slug', row.derivedIndicatorSlug)
+            .eq('version', row.derivedIndicatorVersion)
+        ))
+        .unique())?.referencePageUrl ?? null,
       isDerived: true,
       sourceExportCount: row.sourceExportIds.length,
       sourceExports: await resolveExportSummaries(ctx, row.sourceExportIds),
@@ -5508,6 +5756,8 @@ export const getLatestSnapshotValuesForProfile = query({
         indicatorSlug: indicator.slug,
         indicatorVersion: indicator.version,
         indicatorUnit: indicator.unit ?? null,
+        referencePageUrl: indicator.referencePageUrl ?? null,
+        notes: valueRow.notes ?? null,
         value: isStaleInactive ? null : valueRow.value,
         latestRecordedValue: valueRow.value,
         isDerived: false,
@@ -5548,6 +5798,8 @@ export const getLatestSnapshotValuesForProfile = query({
         computedAt: row.computedAt,
         snapshotAt: row.snapshotAt,
         evidenceRowCount: row.baseSnapshotValueIds.length + row.derivedSnapshotValueIds.length,
+        notes: row.notes ?? null,
+        referencePageUrl: indicator.referencePageUrl ?? null,
         isDerived: true,
         isIndicatorEnabled: indicator.enabled,
         hasInactiveOperands,
@@ -5597,7 +5849,13 @@ export const getSnapshotValueEvidenceDownloadUrl = query({
     }
 
     const snapshotValue = await ctx.db.get(args.snapshotValueId as Id<'snapshotValues'>)
-    if (!snapshotValue || snapshotValue.sourceExportIds.length === 0) {
+    if (!snapshotValue) {
+      return null
+    }
+    if (snapshotValue.evidenceRef) {
+      return await ctx.storage.getUrl(snapshotValue.evidenceRef as Id<'_storage'>)
+    }
+    if (snapshotValue.sourceExportIds.length === 0) {
       return null
     }
     const exportRow = await ctx.db.get(snapshotValue.sourceExportIds[0])

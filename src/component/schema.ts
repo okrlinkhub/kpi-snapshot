@@ -287,6 +287,7 @@ export default defineSchema({
     unit: v.optional(v.string()),
     category: v.optional(v.string()),
     description: v.optional(v.string()),
+    referencePageUrl: v.optional(v.string()),
     externalId: v.optional(v.string()),
     reportUsageCount: v.optional(v.number()),
     enabled: v.boolean(),
@@ -488,6 +489,7 @@ export default defineSchema({
     ruleHash: v.string(),
     sourceExportIds: v.array(v.id("analyticsExports")),
     explainRef: v.optional(v.string()),
+    notes: v.optional(v.string()),
     evidenceRef: v.optional(v.string()),
     evidenceFileName: v.optional(v.string()),
     evidenceRowCount: v.optional(v.number()),
@@ -523,6 +525,7 @@ export default defineSchema({
     label: v.string(),
     unit: v.optional(v.string()),
     description: v.optional(v.string()),
+    referencePageUrl: v.optional(v.string()),
     reportUsageCount: v.optional(v.number()),
     lockedSourceKey: v.optional(v.string()),
     lockedDataSourceId: v.optional(v.id("dataSources")),
@@ -565,6 +568,7 @@ export default defineSchema({
     derivedIndicatorDependencyVersions: v.array(v.number()),
     sourceExportIds: v.array(v.id("analyticsExports")),
     formulaSnapshot: v.any(),
+    notes: v.optional(v.string()),
     createdAt: v.number(),
   })
     .index("by_snapshot", ["snapshotId"])

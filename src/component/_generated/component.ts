@@ -894,9 +894,12 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             indicatorUnit: string | null;
             isStaleInactive: boolean;
             memberKey: string;
+            notes: string | null;
             recordedValue: number | null;
+            referencePageUrl: string | null;
             snapshotAt: number | null;
             snapshotId: string | null;
+            snapshotValueId: string | null;
             sourceProfileSlug: string;
             staleReason: "indicator_disabled" | "operand_disabled" | null;
             value: number | null;
@@ -1264,6 +1267,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           targetLabel?: string;
           targetLockedSourceKey?: string;
           targetProfileSlug: string;
+          targetReferencePageUrl?: string;
           targetUnit?: string;
         },
         {
@@ -1287,6 +1291,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           slug?: string;
         },
         string,
+        Name
+      >;
+      updateSnapshotValueNotes: FunctionReference<
+        "mutation",
+        "internal",
+        { notes: string | null; snapshotValueId: string },
+        null,
         Name
       >;
       upsertCalculationDefinition: FunctionReference<
@@ -1444,6 +1455,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           label: string;
           lockedSourceKey: string;
           profileSlug: string;
+          referencePageUrl?: string;
           slug: string;
           unit?: string;
           version: number;
@@ -1487,6 +1499,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
           externalId?: string;
           label: string;
           profileSlug: string;
+          referencePageUrl?: string;
           slug: string;
           unit?: string;
           version: number;
