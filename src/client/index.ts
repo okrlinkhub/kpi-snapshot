@@ -104,6 +104,8 @@ export type SnapshotIndicatorSliceItem = {
   indicatorLabel: string
   indicatorUnit: string | null
   snapshotValueId: string | null
+  hasEvidenceFile: boolean
+  evidenceRowCount: number | null
   notes: string | null
   referencePageUrl: string | null
   value: number | null

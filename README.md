@@ -514,6 +514,14 @@ Campi rilevanti per integrazione:
 - `snapshotRunItems.sourceExportIds`
 - `derivedSnapshotValues.sourceExportIds`
 
+Nei payload runtime orientati ai report (`getSnapshotIndicatorSlice`, `getReportWidgetData`, `getReportWidgetsData`), ogni item espone anche:
+
+- `snapshotValueId`
+- `hasEvidenceFile`
+- `evidenceRowCount`
+- `notes`
+- `referencePageUrl`
+
 Questi campi restano opzionali per non rompere installazioni esistenti e sono usati solo quando vuoi collegare il componente a OKRHub o a un altro sistema esterno.
 
 Per i run snapshot, i campi di stato ora seguono il workflow operativo completo:

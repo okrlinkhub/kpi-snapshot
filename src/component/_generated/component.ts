@@ -888,6 +888,8 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           items: Array<{
             computedAt: number | null;
+            evidenceRowCount: number | null;
+            hasEvidenceFile: boolean;
             indicatorKind: "base" | "derived";
             indicatorLabel: string;
             indicatorSlug: string;
